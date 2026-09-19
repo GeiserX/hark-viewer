@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hark · live transcript</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #0d0e10; --panel: #15171a; --fg: #f2f3f5; --dim: #8b9099; --faint: #565b64;
+    --line: #1f2226; --rec: #ff453a; --ok: #32d74b; --warn: #ffb340; --accent: #6aa8ff;
+    --size: 22px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #fbfbfa; --panel: #f1f1ef; --fg: #15171a; --dim: #6b7079; --faint: #a3a7ae; --line: #e4e4e1; --accent: #1f5fd6; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: var(--size)/1.5 -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    display: flex; flex-direction: column;
+  }
+  header {
+    flex: none; display: flex; align-items: center; gap: 14px; min-height: 54px;
+    padding: 8px 20px 8px 24px; border-bottom: 1px solid var(--line);
+    font-size: 13px; color: var(--dim);
+  }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+  .recording #dot { background: var(--rec); animation: pulse 1.6s ease-in-out infinite; }
+  .paused #dot { background: var(--warn); }
+  .saved #dot { background: var(--ok); }
+  .offline #dot { background: var(--warn); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #state { color: var(--fg); font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: .08em; white-space: nowrap; }
+  #title { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #meta { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  button, input, select {
+    font: 600 13px/1 -apple-system, "SF Pro Text", system-ui, sans-serif; color: var(--fg);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px;
+  }
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--faint); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.on { background: var(--warn); border-color: var(--warn); color: #1a1300; }
+  button.stop { background: var(--rec); border-color: var(--rec); color: #fff; }
+  button.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input { font-weight: 400; width: 17em; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .recording .idle, .paused .idle, body:not(.recording):not(.paused) .busy { display: none; }
+  main { flex: 1; overflow-y: auto; scroll-behavior: smooth; padding: 20px 24px 40vh; }
+  #lines { max-width: 46em; margin: 0 auto; }
+  .row { display: grid; grid-template-columns: 4.2em 1fr; gap: 0 18px; padding: .2em 0; color: var(--dim); transition: color .6s; --c: var(--faint); }
+  .row[data-h] { --c: hsl(var(--h) 85% 70%); }
+  @media (prefers-color-scheme: light) { .row[data-h] { --c: hsl(var(--h) 70% 36%); } }
+  .row.turn { padding-top: .75em; }
+  .row time { font-size: .6em; color: var(--faint); font-variant-numeric: tabular-nums; padding-top: .62em; text-align: right; }
+  .row.turn time { padding-top: 1.75em; }
+  .body { border-left: 3px solid var(--c); padding-left: 16px; }
+  .who { display: block; color: var(--c); font-size: .55em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; margin-bottom: .1em; }
+  .row.new, .row:nth-last-child(-n+3) { color: var(--fg); }
+  .row.new { animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  #empty { max-width: 46em; margin: 18vh auto 0; color: var(--faint); text-align: center; font-size: .8em; }
+  #toast { position: fixed; left: 50%; top: 66px; transform: translateX(-50%); background: var(--rec); color: #fff; font-size: 13px; padding: 9px 16px; border-radius: 8px; display: none; max-width: 80vw; }
+  #jump { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); border-radius: 999px; box-shadow: 0 6px 24px rgba(0,0,0,.35); display: none; }
+  .scrolled #jump { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span><span id="state">…</span>
+  <span id="title"></span>
+  <span id="meta"></span>
+  <form id="controls" autocomplete="off">
+    <select class="idle" id="workspace" title="Folder the call is filed under"></select>
+    <input class="idle" id="newtitle" placeholder="Call title (optional)" maxlength="80">
+    <button class="idle go" id="start" type="submit">● Record</button>
+    <button class="busy" id="mute" type="button">Mute mic</button>
+    <button class="busy" id="pause" type="button">Pause</button>
+    <button class="busy stop" id="stop" type="button">■ Stop</button>
+  </form>
+</header>
+<main id="scroller">
+  <div id="lines"></div>
+  <div id="empty"></div>
+</main>
+<div id="toast"></div>
+<button id="jump" class="go" type="button">↓ Back to live</button>
+<script>
+const params = new URLSearchParams(location.search);
+const $ = id => document.getElementById(id);
+const scroller = $('scroller'), lines = $('lines');
+const hues = { You: 214 }, palette = [36, 145, 285, 5, 178, 58, 325, 100];
+const hue = who => hues[who] ??= palette[(Object.keys(hues).length - 1) % palette.length];
+let call = params.get('call'), st = null, shown = 0, lastWho = null, startMs = null, lastLineAt = null, failures = 0, pinned = true, filled = false;
+
+const pad = n => String(n).padStart(2, '0');
+const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
+const span = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600); return (h ? h + ':' : '') + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60); };
+const get = path => fetch(path + (path.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' });
+const mine = () => st && st.active && st.call === call;   // is the call on screen the one being recorded?
+
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 6000); }
+
+async function post(path, body) {
+  const r = await fetch('/api/' + path, { method: 'POST', headers: { 'X-Hark-Viewer': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) toast(j.error || ('hark said ' + r.status));
+  await poll();
+  return r.ok ? j : null;
+}
+
+function show(next) {           // switch the page to another call without a reload
+  call = next; shown = 0; lastWho = null; startMs = null; lastLineAt = null;
+  lines.textContent = ''; $('title').textContent = '';
+  history.replaceState(null, '', '?call=' + next);
+}
+
+async function loadMeta() {
+  try {
+    const r = await get('/' + call + '/meta.json'); if (!r.ok) return;
+    const m = await r.json();
+    startMs = m.started * 1000;
+    $('title').textContent = [m.workspace, m.title].filter(Boolean).join(' · ');
+    document.title = (m.title || m.workspace) + ' · hark';
+  } catch {}
+}
+
+function render(entries) {
+  for (let i = shown; i < entries.length; i++) {
+    const e = entries[i], row = document.createElement('div'), t = document.createElement('time'), p = document.createElement('div');
+    row.className = 'row new'; p.className = 'body';
+    t.textContent = startMs ? clock(startMs + e.start * 1000) : span(e.start);
+    t.title = span(e.start) + ' into the call';
+    if (e.speaker) {
+      row.dataset.h = hue(e.speaker); row.style.setProperty('--h', hue(e.speaker));
+      if (e.speaker !== lastWho) { const w = document.createElement('span'); w.className = 'who'; w.textContent = e.speaker; p.append(w); row.classList.add('turn'); }
+    }
+    lastWho = e.speaker || null;
+    p.append(document.createTextNode(e.text));
+    row.append(t, p); lines.append(row);
+    setTimeout(() => row.classList.remove('new'), 4000);
+  }
+  if (entries.length > shown) {
+    if (shown) lastLineAt = Date.now();
+    shown = entries.length;
+    if (pinned) scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+async function poll() {
+  try {
+    st = await (await get('/api/status')).json();
+    if (!call && st.call) show(st.call);                 // opened bare: follow the active or last call
+    if (call) {
+      if (!startMs) await loadMeta();
+      const r = await get('/' + call + '/transcript.json');
+      if (r.ok) {
+        const entries = [];
+        for (const l of (await r.text()).split('\n')) {
+          if (!l.trim()) continue;
+          try { const e = JSON.parse(l); if (e && typeof e.text === 'string') entries.push(e); } catch {}  // a half-written last line is read on the next poll
+        }
+        render(entries);
+      }
+    }
+    failures = 0;
+  } catch { failures++; }
+  paint();
+}
+
+function paint() {
+  const b = document.body, s = st && st.session;
+  let state = 'ready', label = 'ready', meta = '';
+  if (failures >= 3 || (st && !st.agent)) { state = 'offline'; label = failures >= 3 ? 'viewer offline' : 'hark agent down'; meta = 'retrying…'; }
+  else if (mine()) {
+    state = s.state; label = s.state === 'paused' ? 'paused' : 'rec';
+    meta = span(s.elapsed) + (s.muted ? '  ·  mic muted' : '') + (lastLineAt ? '  ·  last line ' + span((Date.now() - lastLineAt) / 1000) + ' ago' : '');
+  }
+  else if (s && s.state === 'failed' && st.call === call) { state = 'offline'; label = 'recording failed'; meta = s.error || ''; }
+  else if (st && st.active) { state = 'ready'; label = 'another call is recording'; }
+  else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines'; }
+  b.className = state + (pinned ? '' : ' scrolled');
+  $('state').textContent = label; $('meta').textContent = meta;
+  $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
+  $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
+  if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
+  $('empty').style.display = shown ? 'none' : 'block';
+  $('empty').textContent = mine() ? 'Listening. A line appears each time someone pauses.' : (call ? 'No transcript lines in this call.' : 'Press Record to start a call.');
+  if (st && !filled && st.workspaces) {
+    const names = [...new Set([params.get('workspace'), ...st.workspaces, 'calls'].filter(Boolean))];
+    $('workspace').replaceChildren(...names.map(n => new Option(n, n)));
+    filled = true;
+  }
+}
+
+$('controls').onsubmit = async e => {
+  e.preventDefault(); $('start').disabled = true;
+  const made = await post('new', { workspace: $('workspace').value, title: $('newtitle').value });
+  $('start').disabled = false;
+  if (made) { show(made.call); $('newtitle').value = ''; filled = false; await poll(); }
+};
+$('mute').onclick = () => post(st.session.muted ? 'unmute' : 'mute');
+$('pause').onclick = () => post(st.session.state === 'paused' ? 'resume' : 'pause');
+$('stop').onclick = () => post('stop');
+$('jump').onclick = () => { pinned = true; scroller.scrollTop = scroller.scrollHeight; paint(); };
+scroller.addEventListener('scroll', () => { pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80; document.body.classList.toggle('scrolled', !pinned); });
+addEventListener('keydown', e => {
+  if (e.target.matches('input, select')) return;
+  const cur = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size'));
+  if (e.key === '+' || e.key === '=') document.documentElement.style.setProperty('--size', Math.min(44, cur + 2) + 'px');
+  if (e.key === '-') document.documentElement.style.setProperty('--size', Math.max(14, cur - 2) + 'px');
+});
+
+poll(); setInterval(poll, 1000);
+</script>
+</body>
+</html>

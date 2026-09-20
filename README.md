@@ -89,6 +89,9 @@ Every `POST` needs the header `X-Hark-Viewer: 1`.
 | `HARK_VIEWER_PORT` | `8474` | Port of the page |
 | `HARK_REMOTE_CONTROL_PORT` | `8473` | Port of hark's agent |
 | `HARK_VIEWER_BROWSER` | `Firefox` | App that opens the page; the system default is used when it is missing |
+| `HARK_BIN` | `hark` | The hark binary to run. Point it at your own build to run an unreleased hark |
+
+Set any of these in the environment, or in `~/.config/hark-viewer.env`, which the launcher reads if it exists.
 
 The `START` dictionary at the top of [`server.py`](server.py) holds what hark records with. By default that is system audio with the microphone mixed in, speaker labels, and the Core Audio backend.
 

@@ -27,7 +27,11 @@ CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 # What every call is recorded with. Opus because it stays playable while hark is
 # still writing it, so a crash costs nothing; m4a and flac hold back the header
 # until hark stops, and WAV costs 635 MB an hour.
-START = {"system": True, "mix": True, "speakers": True, "captureBackend": "coreaudio", "ifExists": "error"}
+START = {"system": True, "mix": True, "speakers": True, "captureBackend": "coreaudio", "ifExists": "error",
+         # Mic on the left channel, the call on the right, so a later pass can still tell them
+         # apart: `hark -i audio.opus --speakers --speaker-mode source` gives You and Others.
+         # Needs a hark with --tracks; drop this key on a build that lacks it.
+         "tracks": "stereo"}
 AUDIO = "audio.opus"
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy

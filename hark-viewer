@@ -34,7 +34,9 @@ case "${1:-}" in
   quit)
     api -X POST "$base/api/stop" >/dev/null 2>&1 || true
     pkill -TERM -x hark 2>/dev/null || true       # SIGTERM lets hark finalise the audio file
-    pkill -f "$here/server.py" 2>/dev/null || true ;;
+    pkill -f "$here/server.py" 2>/dev/null || true
+    # Wait for it to go: starting again while a capture is still finishing gives an empty recording.
+    for i in {1..40}; do pgrep -x hark >/dev/null || break; sleep 0.25; done ;;
   *)
     serve
     workspace="${1:-calls}"; shift || true

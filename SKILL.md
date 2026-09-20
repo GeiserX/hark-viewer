@@ -9,7 +9,7 @@ One **call** = one folder. `hark` records every app's audio plus the mic and app
 
 ```
 ~/Recordings/calls/<workspace>/<YYYY-MM-DD_HHMMSS>[_title]/
-    audio.opus         grows during the call; re-transcribe it afterwards
+    audio.opus         grows during the call; microphone left, call right
     transcript.json    live, one JSON object per line: {"start","end","speaker","text"}
     meta.json          {"started": epoch seconds, "workspace", "title"}
 ~/Recordings/calls/current  ->  the call being recorded (or the last one)

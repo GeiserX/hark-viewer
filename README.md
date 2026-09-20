@@ -9,6 +9,7 @@ hark writes a call's transcript to a file while people are still speaking. hark-
 ## What it does
 
 - Records the whole computer plus your microphone through hark's Core Audio tap. No per-app tracking, no virtual audio driver.
+- Keeps your microphone on the left channel and the call on the right, so a later pass can still tell them apart.
 - Shows each utterance a moment after the speaker pauses, labelled `You` for the microphone and `Speaker 1..N` for voices on the computer side.
 - Starts, stops, pauses and mutes from the page. No terminal window stays open.
 - Files every call in its own folder and keeps the audio, so you can run it through a larger model afterwards.
@@ -50,7 +51,7 @@ You can also start from the page. Pick a folder, type a title and press **Record
 
 ```
 ~/Recordings/calls/<workspace>/<YYYY-MM-DD_HHMMSS>[_title]/
-    audio.opus         the recording
+    audio.opus         the recording, microphone left, call right
     transcript.json    one JSON object per line: {"start", "end", "speaker", "text"}
     meta.json          {"started", "workspace", "title"}
 ~/Recordings/calls/current  ->  the call being recorded, or the last one
@@ -104,6 +105,17 @@ git clone https://github.com/GeiserX/hark-viewer.git ~/.claude/skills/record-cal
 ```
 
 Then `/record-call` starts a recording. While the call runs, ask the agent what was just said or what was decided, and it reads `~/Recordings/calls/current/transcript.json` before answering.
+
+### Getting your own voice back out
+
+The recording keeps the microphone on channel 0 and the call on channel 1, so the accurate pass afterwards can still say who spoke:
+
+```sh
+hark -i audio.opus --speakers --speaker-mode source -t final.json   # You / Others
+ffmpeg -i audio.opus -filter_complex channelsplit=channel_layout=stereo -map '[left]' mic.wav   # just your side
+```
+
+`--tracks` and `--speaker-mode source` on a file are unreleased, so this needs a hark built from [the pull requests](https://github.com/PhantomYdn/hark/issues/6) that add them, named through `HARK_BIN`. On a hark without `--tracks`, drop that key from `START` in [`server.py`](server.py) and the recording is a normal mixed file.
 
 ## Limits
 

@@ -3,18 +3,25 @@
 # hark-viewer open                           open the page without recording
 # hark-viewer stop                           stop and save the call being recorded
 # hark-viewer quit                           stop the call, the page server and the hark agent
+#
+# Settings come from the environment or ~/.config/hark-viewer.env:
+#   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER
 set -euo pipefail
 
 here="${0:A:h}"
+# Optional local settings, so a checkout stays generic: HARK_BIN, HARK_VIEWER_PORT, …
+cfg="${HARK_VIEWER_CONFIG:-$HOME/.config/hark-viewer.env}"
+[[ -f "$cfg" ]] && source "$cfg"
 export HARK_VIEWER_ROOT="${HARK_VIEWER_ROOT:-$HOME/Recordings/calls}"
 export HARK_VIEWER_PORT="${HARK_VIEWER_PORT:-8474}"
+export HARK_BIN="${HARK_BIN:-hark}"
 base="http://127.0.0.1:$HARK_VIEWER_PORT"
 api() { curl -sS --noproxy '*' --max-time 15 -H 'X-Hark-Viewer: 1' -H 'Content-Type: application/json' "$@"; }
 browse() { open -a "${HARK_VIEWER_BROWSER:-Firefox}" "$1" 2>/dev/null || open "$1"; }
 
 serve() {
   api "$base/api/status" >/dev/null 2>&1 && return
-  command -v hark >/dev/null || { print -u2 "hark-viewer: hark is not installed (brew install phantomydn/hark/hark)"; exit 69; }
+  command -v "${HARK_BIN:-hark}" >/dev/null || { print -u2 "hark-viewer: ${HARK_BIN:-hark} not found (brew install phantomydn/hark/hark, or set HARK_BIN to your own build)"; exit 69; }
   mkdir -p "$HARK_VIEWER_ROOT"
   nohup python3 "$here/server.py" >> "$HARK_VIEWER_ROOT/.server.log" 2>&1 &!
   for i in {1..60}; do api "$base/api/status" >/dev/null 2>&1 && return; sleep 0.2; done

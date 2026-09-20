@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "calls")).expanduser()
 PORT = int(os.environ.get("HARK_VIEWER_PORT", "8474"))
 HARK_PORT = int(os.environ.get("HARK_REMOTE_CONTROL_PORT", "8473"))
+HARK_BIN = os.environ.get("HARK_BIN", "hark")  # point this at your own build to run an unreleased hark
 HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
@@ -52,7 +53,7 @@ def ensure_agent():
     if hark("GET", "/status")[0] == 200:
         return True
     log = open(ROOT / ".hark-agent.log", "ab")
-    subprocess.Popen(["hark", "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
+    subprocess.Popen([HARK_BIN, "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
                      stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     for _ in range(50):
         time.sleep(0.2)
@@ -85,7 +86,7 @@ def status():
 
 def new_call(workspace, title):
     if not ensure_agent():
-        return 502, {"error": "could not start the hark agent; is hark installed?"}
+        return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}
     code, st = status()
     if st["active"]:
         return 409, {"error": "a call is already being recorded", "call": st["call"]}

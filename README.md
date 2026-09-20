@@ -11,7 +11,7 @@ hark writes a call's transcript to a file while people are still speaking. hark-
 - Records the whole computer plus your microphone through hark's Core Audio tap. No per-app tracking, no virtual audio driver.
 - Shows each utterance a moment after the speaker pauses, labelled `You` for the microphone and `Speaker 1..N` for voices on the computer side.
 - Starts, stops, pauses and mutes from the page. No terminal window stays open.
-- Files every call in its own folder, with the audio kept as WAV so you can run it through a larger model afterwards.
+- Files every call in its own folder and keeps the audio, so you can run it through a larger model afterwards.
 - Runs on `127.0.0.1` only. Nothing leaves the machine.
 
 ## Requirements
@@ -50,7 +50,7 @@ You can also start from the page. Pick a folder, type a title and press **Record
 
 ```
 ~/Recordings/calls/<workspace>/<YYYY-MM-DD_HHMMSS>[_title]/
-    audio.wav          the recording
+    audio.opus         the recording
     transcript.json    one JSON object per line: {"start", "end", "speaker", "text"}
     meta.json          {"started", "workspace", "title"}
 ~/Recordings/calls/current  ->  the call being recorded, or the last one
@@ -58,7 +58,7 @@ You can also start from the page. Pick a folder, type a title and press **Record
 
 `transcript.json` is JSON Lines. hark appends a complete line per utterance, so any program can read the file during the call. `start` and `end` are seconds into the recording; add `start` to `started` in `meta.json` to get the clock time.
 
-The audio is WAV because a WAV grows on disk while hark records. `.m4a` and `.flac` are unreadable until hark stops, so a crash mid-call would lose them. WAV costs about 635 MB per hour.
+The audio is Opus because an Opus file stays playable while hark is still writing it, so a crash mid-call costs nothing. `.m4a` and `.flac` hold back their header until hark stops, and `.wav` would cost 635 MB an hour against Opus's 23. macOS types the file as `org.xiph.ogg-audio`, so transcription apps open it like any other recording.
 
 ## How it fits together
 
@@ -104,7 +104,7 @@ Then `/record-call` starts a recording. While the call runs, ask the agent what 
 
 ## Limits
 
-- Live speaker numbers are a guess made as the audio arrives. Two similar voices can share a number. For an accurate transcript, run `audio.wav` through a full transcription pass after the call.
+- Live speaker numbers are a guess made as the audio arrives. Two similar voices can share a number. For an accurate transcript, run `audio.opus` through a full transcription pass after the call.
 - A line appears when the speaker pauses for about 0.7 seconds, or after 12 seconds of unbroken speech. Those two values are fixed inside hark.
 - hark records one microphone, the macOS default input.
 - Clock times drift by the length of any pause, because hark leaves paused time out of the recording.

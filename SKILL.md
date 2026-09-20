@@ -9,7 +9,7 @@ One **call** = one folder. `hark` records every app's audio plus the mic and app
 
 ```
 ~/Recordings/calls/<workspace>/<YYYY-MM-DD_HHMMSS>[_title]/
-    audio.wav          grows during the call; re-transcribe it afterwards
+    audio.opus         grows during the call; re-transcribe it afterwards
     transcript.json    live, one JSON object per line: {"start","end","speaker","text"}
     meta.json          {"started": epoch seconds, "workspace", "title"}
 ~/Recordings/calls/current  ->  the call being recorded (or the last one)
@@ -37,16 +37,16 @@ The live text comes from Parakeet v3, multilingual, language detected per uttera
 
 ## Stop
 
-The user presses Stop on the page, or run `hark-viewer stop`. Done when `/api/status` reports `"active": false` and the session `"state": "stopped"`, which is when hark finalises `audio.wav`. `hark-viewer quit` also shuts down the page server and the agent.
+The user presses Stop on the page, or run `hark-viewer stop`. Done when `/api/status` reports `"active": false` and the session `"state": "stopped"`, which is when hark finalises `audio.opus`. `hark-viewer quit` also shuts down the page server and the agent.
 
 ## After the call
 
-`audio.wav` costs about 635 MB per hour. The live transcript is the fast pass. The accurate one, with proper speaker separation, comes from running `audio.wav` through the user's transcription app afterwards. Delete or compress a WAV only when the user says so.
+`audio.opus` costs about 23 MB per hour. The live transcript is the fast pass. The accurate one, with proper speaker separation, comes from running `audio.opus` through the user's transcription app afterwards; macOS types it as `org.xiph.ogg-audio`, which MacWhisper accepts. Delete a recording only when the user says so.
 
 ## Traps
 
 - **hark answers a started recording with HTTP 201**, not 200.
-- **WAV only while recording.** `.m4a` and `.flac` stay unreadable until hark stops, so a crash would lose the call.
+- **Opus on purpose.** It stays playable while hark writes it, so a crash costs nothing. `.m4a` and `.flac` hold back the header until hark stops, and `.wav` costs 635 MB an hour.
 - **The agent never overwrites.** Every call gets a fresh folder; keep it that way.
 - **`session.state: "failed"`** in `/api/status` carries the reason in `session.error`. The page shows it too.
 - **The shell may export an HTTP proxy.** Talk to `127.0.0.1` with `curl --noproxy '*'`.

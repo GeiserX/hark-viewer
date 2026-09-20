@@ -23,9 +23,11 @@ HARK_PORT = int(os.environ.get("HARK_REMOTE_CONTROL_PORT", "8473"))
 HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
-# What every call is recorded with. WAV because it grows on disk while recording;
-# m4a and flac stay unreadable until hark stops, so a crash would lose the call.
+# What every call is recorded with. Opus because it stays playable while hark is
+# still writing it, so a crash costs nothing; m4a and flac hold back the header
+# until hark stops, and WAV costs 635 MB an hour.
 START = {"system": True, "mix": True, "speakers": True, "captureBackend": "coreaudio", "ifExists": "error"}
+AUDIO = "audio.opus"
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy
 
@@ -91,7 +93,7 @@ def new_call(workspace, title):
     name = time.strftime("%Y-%m-%d_%H%M%S") + (f"_{slug(title)}" if slug(title) else "")
     folder = ROOT / workspace / name
     folder.mkdir(parents=True)
-    code, body = hark("POST", "/start", {**START, "audio": str(folder / "audio.wav"),
+    code, body = hark("POST", "/start", {**START, "audio": str(folder / AUDIO),
                                          "transcript": str(folder / "transcript.json")})
     if code not in (200, 201):                              # hark answers a started recording with 201
         folder.rmdir()

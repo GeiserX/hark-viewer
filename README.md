@@ -112,7 +112,7 @@ The recording keeps the microphone on channel 0 and the call on channel 1, so th
 
 ```sh
 hark -i audio.opus --speakers --speaker-mode source -t final.json   # You / Others
-ffmpeg -i audio.opus -filter_complex channelsplit=channel_layout=stereo -map '[left]' mic.wav   # just your side
+ffmpeg -i audio.opus -af "pan=mono|c0=c0" mic.wav                   # just your side (c0=c1 for the call)
 ```
 
 `--tracks` and `--speaker-mode source` on a file are unreleased, so this needs a hark built from [the pull requests](https://github.com/PhantomYdn/hark/issues/6) that add them, named through `HARK_BIN`. On a hark without `--tracks`, drop that key from `START` in [`server.py`](server.py) and the recording is a normal mixed file.

@@ -5,6 +5,8 @@ ok      one line per file, at 1.0 s, whose text is the input's file name
 poison  refuses the whole recording and any piece covering second FAKE_HARK_POISON,
         with the message the real one gave. A piece is named <stem>_<start>_<length>.wav.
 fail    refuses everything
+
+FAKE_HARK_TEXT replaces the transcribed text, for a test that needs a real sentence.
 """
 import json
 import os
@@ -31,4 +33,5 @@ if refuse:
     sys.exit("Error: Invalid audio data provided. Must be at least 300ms of 16kHz audio")
 if out.exists():
     sys.exit(f"{out} exists")            # the real one never overwrites
-out.write_text(json.dumps([{"text": audio.name, "speaker": "Others", "start": 1.0, "end": 2.0}]))
+text = os.environ.get("FAKE_HARK_TEXT", audio.name)
+out.write_text(json.dumps([{"text": text, "speaker": "Others", "start": 1.0, "end": 2.0}]))

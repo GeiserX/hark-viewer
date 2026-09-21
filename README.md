@@ -62,7 +62,7 @@ You can also start from the page. Pick a folder, type a title and press **Record
     meta.json          {"started", "workspace", "title"}, plus "parts" once the call was restarted
     transcript.final.json   the accurate transcript, written after the call stops
     transcript.mw.txt       MacWhisper's transcript of the same audio, when MacWhisper is installed
-    postprocess.json        how far those two have got
+    postprocess.json        how far those two have got, and which languages the call was in
 ~/Recordings/calls/current  ->  the call being recorded, or the last one
 ```
 
@@ -105,12 +105,16 @@ The live transcript is the fast pass. When a call stops, whether from the page, 
 
 - `transcript.final.json`, from `hark -i <audio> --speakers --speaker-mode source --speaker-labels "Microphone,Others"` over each part, joined on the call's clock. JSON Lines with the keys of `transcript.json`. It needs a hark whose `--speaker-mode source` reads a file's two channels, see [below](#getting-your-own-voice-back-out).
 - `transcript.mw.txt`, from MacWhisper's `mw transcribe <audio> --speakers`, tried twice, because it fails now and then with `GRDB.RecordError error 0` and works the next time. This one is there to compare the two transcribers and will go. `HARK_VIEWER_MW=off` turns it off, and without MacWhisper installed the step is skipped.
+- the languages the call was in, into `postprocess.json` under `steps.languages`. See [below](#which-languages-the-call-was-in).
 - `postprocess.json`, the state of the job, which `/api/status` also carries as `postprocess` for the last call. The page shows it as `final transcript: running`, `ready` or `failed`.
 
 ```json
 {"state": "done", "pid": 48020, "started": 1790010463.1, "finished": 1790010632.7, "settled": {"waited": 5.2, "capped": false},
  "steps": {"final": {"state": "done", "started": 1790010463.1, "finished": 1790010495.4, "error": null, "skipped_spans": []},
-           "mw":    {"state": "done", "started": 1790010495.4, "finished": 1790010632.7, "error": null, "skipped_spans": []}}}
+           "languages": {"state": "done", "started": 1790010495.4, "finished": 1790010496.2, "error": null, "skipped_spans": [],
+                         "languages": {"dominant": "en", "present": ["en"], "mixed": false, "judged": 230,
+                                       "shares": {"en": 1.0}, "other_lines": 0, "other": [], "source": "transcript.final.json"}},
+           "mw":    {"state": "done", "started": 1790010496.2, "finished": 1790010632.7, "error": null, "skipped_spans": []}}}
 ```
 
 `state` is `running`, `done` or `failed`, and follows the `final` step. A step is `pending`, `running`, `done`, `failed` or `skipped`. A job that died reads as `failed`, also when another process has taken its pid since. A job sent SIGTERM removes its scratch folder and records `failed`, and each job sweeps the scratch folders of jobs that were killed outright.
@@ -118,6 +122,28 @@ The live transcript is the fast pass. When a call stops, whether from the page, 
 hark can refuse a whole recording. It did on a 51-minute file, with `Invalid audio data provided. Must be at least 300ms of 16kHz audio`. The job then cuts that part into 10-minute pieces with `ffmpeg`, halves any piece hark still refuses down to about 20 seconds, and skips only the piece that fails at that size. `skipped_spans` lists what it skipped as `{"start", "end", "part", "error"}` on the call's clock. When hark refuses every piece the step fails and writes no transcript.
 
 `postprocess.json` is also the lock. The job links it into place already filled in, so it runs once per call and nobody ever reads the file empty. `./hark-viewer finalize [call] --force` runs it again, and without `--force` it does a call that never got one, such as a call recorded before this existed.
+
+## Which languages the call was in
+
+The job also says what the call was spoken in, because that decides which live model is the right one. Apple's on-device recognizer reads every line of the accurate transcript, or of the live one when the accurate pass has not run, and the answer lands in `postprocess.json` under `steps.languages`:
+
+```json
+{"engine": "NLLanguageRecognizer", "lines": 79, "judged": 67, "dominant": "en", "shares": {"en": 0.985, "pt": 0.015},
+ "present": ["en"], "mixed": false, "other_lines": 0, "other": [], "source": "transcript.final.json"}
+```
+
+`dominant` is the language most lines are in. `present` is what the call is judged to have been spoken in and `mixed` says whether that is more than one language, which is the pair to read. `shares` is the raw per-line tally, `other` lists the lines not in the dominant language as `{"start", "end", "language", "confidence"}`, and `judged` counts the lines long enough to be worth reading at all.
+
+Two rules keep a wrong guess from reading as a second language. A line counts as another language only above 0.95 confidence: on an all-English call the recognizer called one line Portuguese at 0.929, while real English lines went as low as 0.829, so confidence alone does not separate them. Spanish speech scores 0.996, even from the garbled live transcription of it. And one such line is not enough. A language joins `present` when it holds over at least two lines, or over a tenth of a call too short for two lines to mean anything. So the stray Portuguese line above leaves `mixed` false, and `shares` still reports it.
+
+To ask about any call without writing anything:
+
+```sh
+./hark-viewer languages                          # the call in `current`
+./hark-viewer languages work/2026-09-21_101500
+```
+
+It needs `/usr/bin/python3`, the one interpreter here that carries the PyObjC bridge to the recognizer. A Homebrew or mise python has no bridge. Point `HARK_VIEWER_PY3` elsewhere if that path ever moves; without it the step is skipped and the rest of the job goes on.
 
 ## How it fits together
 
@@ -196,7 +222,7 @@ hark -i audio.opus --speakers --speaker-mode source -t final.json   # You / Othe
 
 **On hark 0.4.3, `hark -i audio.opus` transcribes your microphone and loses the call**, because it reads channel 0 of a stereo file and stops there. The result looks like a call nobody else spoke on. On one recording the stereo file gave 1544 characters of text, and the call channel alone gave 7891. Split the channel with `ffmpeg` first, which is what `relabel` does, or use a hark built from [the pull requests](https://github.com/PhantomYdn/hark/issues/6) that read both channels, named through `HARK_BIN`. `--speaker-mode source` on a file is unreleased for the same reason.
 
-A hark built from those branches can stop the offline pass with `Must be at least 300ms of 16kHz audio`. The recording is fine; the branches drop a diarized span shorter than the recognizer accepts. 0.4.3 never hits it, and `relabel --spans FILE` takes spans from any build that works.
+A hark built from those branches used to stop the offline pass with `Must be at least 300ms of 16kHz audio`, because a diarized span can come out shorter than the recognizer accepts. That is fixed: a short span is padded with silence up to the recognizer's floor, so it is transcribed instead of killing the run. On a build from before that fix, `relabel --spans FILE` takes spans from any build that works.
 
 ## Tests
 

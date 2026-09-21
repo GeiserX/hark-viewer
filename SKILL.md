@@ -73,6 +73,8 @@ Wait on `postprocess.json` in the call folder, or on `postprocess` in `/api/stat
 
 It writes `transcript.speakers.json` next to the live file and leaves `transcript.json` alone. It covers part 1 only. It prints how many lines matched a span and exits 3 when too few did. Lines it cannot place keep their live label.
 
+The job also says which languages the call was in, in `postprocess.json` under `steps.languages`. Read `mixed` and `present`: `mixed` is false and `present` is `["en"]` on an English call, and a call with Spanish in it lists both. `other` gives the time of each line not in the dominant language. Ask about any call without writing anything with `<this skill's directory>/hark-viewer languages [call]`.
+
 Delete a recording only when the user says so.
 
 ## Traps

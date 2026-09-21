@@ -28,6 +28,7 @@ HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 LIVE = ("recording", "paused")
+STALE = 3600                                                # a call not written to for this long is not restarted unasked
 STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # What every call is recorded with. Opus because it stays playable while hark is
@@ -108,6 +109,11 @@ def relaunch_agent():
     """Kill whatever listens on hark's port and start a fresh agent. The only way out of a wedged capture."""
     run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"], capture_output=True, text=True)
     for pid in run.stdout.split():
+        # Only hark's agent. Something else may listen on the same port of another address, an ssh -L or a VM forward.
+        command = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout.strip()
+        if "--remote-control" not in command:
+            print(f"relaunch: left pid {pid} alone, it is not a hark agent: {command}", file=sys.stderr, flush=True)
+            continue
         try:
             os.kill(int(pid), 15)                           # SIGTERM lets hark finalise the audio file
         except (OSError, ValueError):
@@ -170,7 +176,7 @@ def new_call(workspace, title):
         return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}
 
 
-def restart_call():
+def restart_call(force=False):
     """Stop the recording and start a new part in the same call folder, for when the capture broke mid-call.
 
     Also for a session hark reports `failed`, and for an agent that died: then the call is the one in `current`.
@@ -184,6 +190,12 @@ def restart_call():
             return 409, {"error": "no call is being recorded, so there is nothing to restart"}
         call, folder = st["call"], ROOT / st["call"]
         meta = postprocess.read_meta(folder)
+        if not st["active"] and not force:
+            # With no live session the call is whatever `current` points at, which can be days old.
+            written = [(folder / p["audio"]).stat().st_mtime for p in postprocess.parts_of(folder, meta) if (folder / p["audio"]).is_file()]
+            if not written or time.time() - max(written) > STALE:
+                return 409, {"error": f"{call} was last recorded more than an hour ago, so this looks like a finished call; "
+                                      "`hark-viewer restart --force` records on into it anyway", "call": call}
         if not isinstance(meta.get("started"), (int, float)):
             # Without the call's start every part would sit at 0:00, on top of part 1.
             try:
@@ -328,7 +340,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.reply(400, {"error": "body must be JSON"})
             return self.reply(*new_call(body.get("workspace", ""), body.get("title", "")))
         if path == "/api/restart":
-            return self.reply(*restart_call())
+            try:
+                force = json.loads(raw or b"{}").get("force") is True
+            except (ValueError, AttributeError):
+                force = False
+            return self.reply(*restart_call(force))
         if path.startswith("/api/") and path[5:] in CONTROLS:
             return self.reply(*hark("POST", "/" + path[5:]))
         self.send_error(404)

@@ -410,6 +410,36 @@ class Server(ServerCase):
         st = self.api("/api/status")[1]
         self.assertEqual((st["active"], st["call"], st["parts"]), (True, made["call"], 2))
 
+    def test_a_bystander_listening_on_the_same_port_survives_the_relaunch(self):
+        # The shape of an ssh -L or a VM forward: another process, same port, the IPv6 loopback.
+        bystander = subprocess.Popen([sys.executable, "-c", "import socket, sys, time; s = socket.socket(socket.AF_INET6); "
+                                      "s.bind(('::1', int(sys.argv[1]))); s.listen(); print('up', flush=True); time.sleep(120)",
+                                      str(self.agent_port)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        self.addCleanup(bystander.stdout.close)
+        self.assertEqual(bystander.stdout.readline().strip(), "up")
+        self.fake(wedged=True, finish=1)
+        self.new()
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("part")), (200, 2), again)
+        self.assertEqual(len(set(self.launches())), 2)                   # the wedged agent was replaced
+        self.assertIsNone(bystander.poll(), "the relaunch killed a process that is not a hark agent")
+
+    def test_a_call_last_recorded_over_an_hour_ago_is_restarted_only_with_force(self):
+        made, folder = self.new()
+        self.kill_agent()
+        self.wait_for(lambda: not self.api("/api/status")[1]["agent"], "the agent to be gone")
+        old = time.time() - 2 * 3600
+        os.utime(folder / "audio.opus", (old, old))
+        code, body = self.api("/api/restart", "POST")
+        self.assertEqual(code, 409)
+        self.assertIn("more than an hour ago", body["error"])
+        self.assertIn("--force", body["error"])
+        self.assertFalse((folder / "audio.part2.opus").exists())
+        code, again = self.api("/api/restart", "POST", {"force": True})
+        self.assertEqual((code, again.get("call"), again.get("part")), (200, made["call"], 2), again)
+
     def test_restart_brings_back_an_agent_that_died_and_goes_on_in_the_current_call(self):
         made, folder = self.new()
         self.kill_agent()

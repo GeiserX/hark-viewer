@@ -2,7 +2,7 @@
 # hark-viewer [workspace] [title words...]   record a call and open the live transcript page
 # hark-viewer open                           open the page without recording
 # hark-viewer stop                           stop and save the call being recorded
-# hark-viewer restart                        capture broke mid-call: stop, and record on into the same call folder
+# hark-viewer restart [--force]              capture broke mid-call: stop, and record on into the same call folder
 # hark-viewer quit                           stop the call, the page server and the hark agent
 # hark-viewer relabel [call] [options]       fix the speaker labels of a finished call
 # hark-viewer finalize [call] [--force]      write the accurate transcript by hand (a stopped call gets it on its own)
@@ -35,7 +35,8 @@ case "${1:-}" in
   open) serve; browse "$base/" ;;
   stop) api -X POST "$base/api/stop"; print ;;
   restart)
-    out="$(api -X POST --max-time 60 -w '\n%{http_code}' "$base/api/restart")"
+    data='{}'; [[ "${2:-}" == --force ]] && data='{"force": true}'   # --force: also a call last recorded over an hour ago
+    out="$(api -X POST --max-time 60 --data-binary "$data" -w '\n%{http_code}' "$base/api/restart")"
     print -r -- "${out%$'\n'*}"
     [[ "${out##*$'\n'}" == 200 ]] || exit 70 ;;
   quit)

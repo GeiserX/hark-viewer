@@ -30,7 +30,7 @@ CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 START = {"system": True, "mix": True, "speakers": True, "captureBackend": "coreaudio", "ifExists": "error",
          # Mic on the left channel, the call on the right, so a later pass can still tell them
          # apart: `hark -i audio.opus --speakers --speaker-mode source` gives You and Others.
-         # Needs a hark with --tracks; drop this key on a build that lacks it.
+         # A hark without --tracks ignores the key and records a mixed file.
          "tracks": "stereo"}
 AUDIO = "audio.opus"
 
@@ -160,6 +160,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             return self.wfile.write(raw)
+        # `hark-viewer relabel` writes transcript.speakers.json next to the live
+        # file, same lines with the speakers corrected by an offline pass. Prefer
+        # it, so the page and any agent reading the call get the better labels.
+        if path.endswith("/transcript.json"):
+            better = path[: -len("transcript.json")] + "transcript.speakers.json"
+            if Path(self.translate_path(better)).is_file():   # translate_path resolves under ROOT
+                self.path = better
         super().do_GET()
 
     def do_POST(self):

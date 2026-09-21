@@ -10,11 +10,14 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import postprocess
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "calls")).expanduser()
@@ -24,6 +27,10 @@ HARK_BIN = os.environ.get("HARK_BIN", "hark")  # point this at your own build to
 HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
+LIVE = ("recording", "paused")
+STALE = 3600                                                # a call not written to for this long is not restarted unasked
+STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
+WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # What every call is recorded with. Opus because it stays playable while hark is
 # still writing it, so a crash costs nothing; m4a and flac hold back the header
 # until hark stops, and WAV costs 635 MB an hour.
@@ -36,6 +43,10 @@ START = {"system": True, "mix": True, "speakers": True, "captureBackend": "corea
          # pause; the page shows it as the grey row. A hark without it ignores the key.
          "liveStreaming": True}
 AUDIO = "audio.opus"
+
+# Held by a restart from its stop to its start, and by every tick of the watcher, so
+# the stop in the middle of a restart is never taken for the end of the call.
+turn = threading.Lock()
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy
 
@@ -84,40 +95,171 @@ def call_of(session):
 def status():
     code, body = hark("GET", "/status")
     session = body.get("session") if code == 200 else None
-    active = bool(session) and session.get("state") in ("recording", "paused")
+    active = bool(session) and session.get("state") in LIVE
     call = call_of(session) if session else None
     if not call and (ROOT / "current").is_symlink():       # agent restarted: fall back to the last call made
         call = call_of({"transcript": str(ROOT / "current" / "transcript.json")})
-    return code, {"agent": code == 200, "active": active, "session": session, "call": call, "error": body.get("error")}
+    # `session` goes through whole, so what a newer hark adds (partial, callAudio) reaches the page untouched.
+    return code, {"agent": code == 200, "active": active, "session": session, "call": call, "error": body.get("error"),
+                  "parts": len(postprocess.parts_of(ROOT / call)) if call else 0,
+                  "postprocess": postprocess.read_status(ROOT / call) if call else None}
+
+
+def relaunch_agent():
+    """Kill whatever listens on hark's port and start a fresh agent. The only way out of a wedged capture."""
+    run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"], capture_output=True, text=True)
+    for pid in run.stdout.split():
+        # Only hark's agent. Something else may listen on the same port of another address, an ssh -L or a VM forward.
+        command = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout.strip()
+        if "--remote-control" not in command:
+            print(f"relaunch: left pid {pid} alone, it is not a hark agent: {command}", file=sys.stderr, flush=True)
+            continue
+        try:
+            os.kill(int(pid), 15)                           # SIGTERM lets hark finalise the audio file
+        except (OSError, ValueError):
+            pass
+    for _ in range(50):
+        if hark("GET", "/status")[0] != 200:
+            break
+        time.sleep(0.2)
+    return ensure_agent()
+
+
+def start_recording(audio, transcript):
+    """POST /start, patient with a capture that is still finishing.
+
+    hark says `stopped` the moment a stop is asked for. The capture that writes the audio
+    finishes afterwards, /status does not show it, and until it has, /start answers 409
+    "still finishing". hark gives up on it after its own stop timeout (10 s) and then refuses
+    every start until the agent is restarted, so past that wait the agent is relaunched.
+    """
+    body = {**START, "audio": str(audio), "transcript": str(transcript)}
+    end = time.time() + STOP_WAIT
+    while True:
+        code, answer = hark("POST", "/start", body)
+        if code in (200, 201) or not (code == 409 and "finishing" in str(answer.get("error"))):
+            return code, answer                             # hark answers a started recording with 201
+        if time.time() >= end:
+            break
+        time.sleep(0.5)
+    if not relaunch_agent():
+        return 502, {"error": f"the capture is wedged and the hark agent ({HARK_BIN}) did not come back"}
+    return hark("POST", "/start", body)
 
 
 def new_call(workspace, title):
     if not ensure_agent():
         return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}
-    code, st = status()
-    if st["active"]:
-        return 409, {"error": "a call is already being recorded", "call": st["call"]}
-    workspace = slug(workspace, "calls")
-    name = time.strftime("%Y-%m-%d_%H%M%S") + (f"_{slug(title)}" if slug(title) else "")
-    folder = ROOT / workspace / name
-    folder.mkdir(parents=True)
-    code, body = hark("POST", "/start", {**START, "audio": str(folder / AUDIO),
-                                         "transcript": str(folder / "transcript.json")})
-    if code not in (200, 201):                              # hark answers a started recording with 201
-        folder.rmdir()
-        return code, body
-    (folder / "meta.json").write_text(json.dumps(
-        {"started": time.time(), "workspace": workspace, "title": str(title).strip(), "id": body.get("id")}))
-    link = ROOT / "current"
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(folder)
-    call = f"{workspace}/{name}"
-    return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}
+    with turn:
+        code, st = status()
+        if st["active"]:
+            return 409, {"error": "a call is already being recorded", "call": st["call"]}
+        if watch.call:                                      # ended inside the watcher's last tick: it still gets its transcript
+            finalize(watch.call)
+            watch.call = None
+        workspace = slug(workspace, "calls")
+        name = time.strftime("%Y-%m-%d_%H%M%S") + (f"_{slug(title)}" if slug(title) else "")
+        folder = ROOT / workspace / name
+        folder.mkdir(parents=True)
+        code, body = start_recording(folder / AUDIO, folder / "transcript.json")
+        if code not in (200, 201):
+            folder.rmdir()
+            return code, body
+        (folder / "meta.json").write_text(json.dumps(
+            {"started": time.time(), "workspace": workspace, "title": str(title).strip(), "id": body.get("id")}))
+        link = ROOT / "current"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(folder)
+        call = f"{workspace}/{name}"
+        watch.call = call
+        return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}
+
+
+def restart_call(force=False):
+    """Stop the recording and start a new part in the same call folder, for when the capture broke mid-call.
+
+    Also for a session hark reports `failed`, and for an agent that died: then the call is the one in `current`.
+    """
+    if not ensure_agent():
+        return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}
+    with turn:
+        code, st = status()
+        state = (st["session"] or {}).get("state")
+        if not st["call"] or state == "stopped" or (ROOT / st["call"] / postprocess.STATUS).exists():
+            return 409, {"error": "no call is being recorded, so there is nothing to restart"}
+        call, folder = st["call"], ROOT / st["call"]
+        meta = postprocess.read_meta(folder)
+        if not st["active"] and not force:
+            # With no live session the call is whatever `current` points at, which can be days old.
+            written = [(folder / p["audio"]).stat().st_mtime for p in postprocess.parts_of(folder, meta) if (folder / p["audio"]).is_file()]
+            if not written or time.time() - max(written) > STALE:
+                return 409, {"error": f"{call} was last recorded more than an hour ago, so this looks like a finished call; "
+                                      "`hark-viewer restart --force` records on into it anyway", "call": call}
+        if not isinstance(meta.get("started"), (int, float)):
+            # Without the call's start every part would sit at 0:00, on top of part 1.
+            try:
+                meta["started"] = (folder / AUDIO).stat().st_birthtime
+            except (OSError, AttributeError):
+                return 409, {"error": f"{call} has no start time in meta.json and no {AUDIO} to take one from", "call": call}
+        if st["active"]:
+            hark("POST", "/stop")
+        parts = postprocess.parts_of(folder, meta)
+        n = len(parts) + 1
+        while (folder / f"audio.part{n}.opus").exists() or (folder / f"transcript.part{n}.json").exists():
+            n += 1                                          # hark never overwrites, so never offer it a taken name
+        part = {"n": n, "audio": f"audio.part{n}.opus", "transcript": f"transcript.part{n}.json"}
+        code, body = start_recording(folder / part["audio"], folder / part["transcript"])
+        if code not in (200, 201):
+            return 502, {"error": f"the call is stopped and part {n} did not start: {body.get('error') or body}", "call": call}
+        part["started"] = time.time()
+        postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
+        watch.call = call
+        return 200, {"call": call, "folder": str(folder), "part": n, "url": f"http://127.0.0.1:{PORT}/?call={call}"}
+
+
+def finalize(call):
+    """The accurate transcript, as a detached job that outlives this server. It refuses to run twice for one call."""
+    folder = ROOT / call
+    if (folder / postprocess.STATUS).exists() or not folder.is_dir():
+        return
+    log = open(ROOT / ".postprocess.log", "ab")
+    job = subprocess.Popen([sys.executable, str(HERE / "postprocess.py"), str(folder)], env={**os.environ, "HARK_BIN": HARK_BIN},
+                           stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    log.close()
+    threading.Thread(target=job.wait, daemon=True).start()  # reaped, or a killed job stays a zombie that reads as running
+
+
+def watch():
+    """Notice the end of a call however it ended: the page, `hark-viewer stop`, or hark itself."""
+    while True:
+        time.sleep(WATCH_EVERY)
+        try:
+            with turn:
+                code, st = status()
+                if st["active"]:
+                    watch.call = st["call"]
+                elif watch.call and (st["session"] or {}).get("state") == "stopped" and st["call"] == watch.call:
+                    finalize(watch.call)
+                    watch.call = None
+        except Exception as e:                              # noqa: BLE001 - the watcher must outlive any one bad tick
+            print(f"watch: {e}", file=sys.stderr, flush=True)
+
+
+watch.call = None                                           # the call last seen recording
 
 
 def workspaces():
     return sorted(p.name for p in ROOT.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith("."))
+
+
+def better_of(live):
+    """transcript.speakers.json in place of transcript.json, while it is the newer of the two."""
+    better = live.with_name("transcript.speakers.json")
+    if live.name == "transcript.json" and better.is_file() and (
+            not live.is_file() or better.stat().st_mtime >= live.stat().st_mtime):
+        return better
+    return live
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -170,8 +312,15 @@ class Handler(SimpleHTTPRequestHandler):
         # live file newer, and the page must keep seeing new lines.
         if path.endswith("/transcript.json"):
             live = Path(self.translate_path(path))            # translate_path resolves under ROOT
-            better = live.with_name("transcript.speakers.json")
-            if better.is_file() and (not live.is_file() or better.stat().st_mtime >= live.stat().st_mtime):
+            if len(postprocess.parts_of(live.parent)) > 1:
+                # A restarted call: every part's lines as one transcript on the call's clock.
+                raw = postprocess.jsonl(postprocess.merged_lines(live.parent, better_of)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                return self.wfile.write(raw)
+            if better_of(live) != live:
                 self.path = path[: -len("transcript.json")] + "transcript.speakers.json"
         super().do_GET()
 
@@ -190,6 +339,12 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 return self.reply(400, {"error": "body must be JSON"})
             return self.reply(*new_call(body.get("workspace", ""), body.get("title", "")))
+        if path == "/api/restart":
+            try:
+                force = json.loads(raw or b"{}").get("force") is True
+            except (ValueError, AttributeError):
+                force = False
+            return self.reply(*restart_call(force))
         if path.startswith("/api/") and path[5:] in CONTROLS:
             return self.reply(*hark("POST", "/" + path[5:]))
         self.send_error(404)
@@ -198,6 +353,7 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     ROOT.mkdir(parents=True, exist_ok=True)
     ensure_agent()
+    threading.Thread(target=watch, daemon=True).start()
     try:
         ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
     except OSError as e:

@@ -50,6 +50,12 @@
   input { font-weight: 400; width: 17em; }
   input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .recording .idle, .paused .idle, body:not(.recording):not(.paused) .busy { display: none; }
+  /* What the capture is doing, under the header. Grey is normal, amber is a guess, red is proven. */
+  #notice { flex: none; display: none; padding: 7px 24px; font-size: 13px; color: var(--dim); border-bottom: 1px solid var(--line); }
+  #notice.quiet, #notice.fine, #notice.guess, #notice.dead { display: block; }
+  #notice.fine { color: var(--ok); }
+  #notice.guess { background: var(--warn); color: #1a1300; font-weight: 600; }
+  #notice.dead { background: var(--rec); color: #fff; font-weight: 700; font-size: 16px; padding: 14px 24px; animation: pulse 1.6s ease-in-out infinite; }
   main { flex: 1; overflow-y: auto; scroll-behavior: smooth; padding: 20px 24px 40vh; }
   #lines { max-width: 46em; margin: 0 auto; }
   .row { display: grid; grid-template-columns: 4.2em 1fr; gap: 0 18px; padding: .2em 0; color: var(--dim); transition: color .6s; --c: var(--faint); }
@@ -84,9 +90,11 @@
     <button class="idle go" id="start" type="submit">● Record</button>
     <button class="busy" id="mute" type="button">Mute mic</button>
     <button class="busy" id="pause" type="button">Pause</button>
+    <button id="restart" type="button" hidden title="Capture broke? Stop and record on into the same call">↻ Restart</button>
     <button class="busy stop" id="stop" type="button">■ Stop</button>
   </form>
 </header>
+<div id="notice" role="status"></div>
 <main id="scroller">
   <div id="lines"></div>
   <div id="partial" class="row" hidden></div>
@@ -101,6 +109,9 @@ const scroller = $('scroller'), lines = $('lines');
 const hues = { You: 214 }, palette = [36, 145, 285, 5, 178, 58, 325, 100];
 const hue = who => hues[who] ??= palette[(Object.keys(hues).length - 1) % palette.length];
 let call = params.get('call'), st = null, shown = 0, lastWho = null, startMs = null, lastLineAt = null, failures = 0, pinned = true, filled = false;
+// For a hark that does not report on its capture: when this page last saw any sign of speech.
+let heardAt = Date.now(), heardKey = '';
+const QUIET_AFTER = (+params.get('quiet') || 90) * 1000;
 
 const pad = n => String(n).padStart(2, '0');
 const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
@@ -119,7 +130,7 @@ async function post(path, body) {
 }
 
 function show(next) {           // switch the page to another call without a reload
-  call = next; shown = 0; lastWho = null; startMs = null; lastLineAt = null; setPartial(null);
+  call = next; shown = 0; lastWho = null; startMs = null; lastLineAt = null; heardAt = Date.now(); setPartial(null);
   lines.textContent = ''; $('title').textContent = '';
   history.replaceState(null, '', '?call=' + next);
 }
@@ -201,6 +212,36 @@ async function poll() {
   paint();
 }
 
+// The state of the call side of the capture. hark reports it as session.callAudio. One that
+// does not leaves this page to guess from the transcript, and a guess is amber, never red:
+// nobody talking before a meeting starts looks the same from here as a dead capture.
+function notice() {
+  const s = st && st.session, el = $('notice');
+  let kind = '', text = '';
+  if (mine() && s.callAudio) {
+    const a = s.callAudio, n = a.restarts ? a.restarts + (a.restarts === 1 ? ' capture restart' : ' capture restarts') : '';
+    if (a.state === 'dead') { kind = 'dead'; text = 'CALL AUDIO LOST for ' + span(a.silentFor || 0) + '. Audio is playing and hark hears none of it. hark is restarting the capture' + (n ? ' (' + n + ' so far)' : '') + '. If this stays, press Restart.'; }
+    else if (a.state === 'silent') { kind = 'quiet'; text = 'call side quiet for ' + span(a.silentFor || 0); }
+    else if (a.state === 'recovered') { kind = 'fine'; text = 'call audio is back' + (n ? ' after ' + n : ''); }
+  } else if (mine() && failures < 3) {           // out of touch with the server, the status is stale and says nothing
+    // Anything new counts as speech: a line, a change in the open line, leaving a pause.
+    const key = [shown, s.state, s.partial && s.partial.text].join('|');
+    if (key !== heardKey || s.state !== 'recording') { heardKey = key; heardAt = Date.now(); }
+    const quiet = Date.now() - heardAt;
+    if (quiet > QUIET_AFTER) { kind = 'guess'; text = 'no new lines for ' + span(quiet / 1000) + '. If people are talking, the capture may have died: press Restart.'; }
+  }
+  el.className = kind; el.textContent = text;
+}
+
+function finalNote() {            // the accurate transcript the server writes once a call stops
+  const p = st && st.call === call && !st.active && st.postprocess, f = p && p.steps && p.steps.final;
+  if (!f) return '';
+  if (p.state === 'failed' || f.state === 'failed') return '  ·  final transcript: failed';
+  if (f.state !== 'done') return '  ·  final transcript: running';
+  const gaps = (f.skipped_spans || []).length;
+  return '  ·  final transcript: ready' + (gaps ? ' (' + gaps + (gaps === 1 ? ' span' : ' spans') + ' skipped)' : '');
+}
+
 function paint() {
   const b = document.body, s = st && st.session;
   let state = 'ready', label = 'ready', meta = '';
@@ -211,12 +252,15 @@ function paint() {
   }
   else if (s && s.state === 'failed' && st.call === call) { state = 'offline'; label = 'recording failed'; meta = s.error || ''; }
   else if (st && st.active) { state = 'ready'; label = 'another call is recording'; }
-  else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines'; }
+  else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }
   b.className = state + (pinned ? '' : ' scrolled');
   $('state').textContent = label; $('meta').textContent = meta;
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
   $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
+  // Restarting is for the call on screen only: while it records, or once hark reports its capture failed.
+  $('restart').hidden = !(mine() || (s && s.state === 'failed' && st.call === call));
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
+  notice();
   $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';
   $('empty').textContent = mine() ? 'Listening. A line appears each time someone pauses.' : (call ? 'No transcript lines in this call.' : 'Press Record to start a call.');
   if (st && !filled && st.workspaces) {
@@ -235,6 +279,7 @@ $('controls').onsubmit = async e => {
 $('mute').onclick = () => post(st.session.muted ? 'unmute' : 'mute');
 $('pause').onclick = () => post(st.session.state === 'paused' ? 'resume' : 'pause');
 $('stop').onclick = () => post('stop');
+$('restart').onclick = async () => { $('restart').disabled = true; await post('restart'); $('restart').disabled = false; };
 $('jump').onclick = () => { pinned = true; scroller.scrollTop = scroller.scrollHeight; paint(); };
 scroller.addEventListener('scroll', () => { pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80; document.body.classList.toggle('scrolled', !pinned); });
 addEventListener('keydown', e => {

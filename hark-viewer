@@ -2,11 +2,13 @@
 # hark-viewer [workspace] [title words...]   record a call and open the live transcript page
 # hark-viewer open                           open the page without recording
 # hark-viewer stop                           stop and save the call being recorded
+# hark-viewer restart [--force]              capture broke mid-call: stop, and record on into the same call folder
 # hark-viewer quit                           stop the call, the page server and the hark agent
 # hark-viewer relabel [call] [options]       fix the speaker labels of a finished call
+# hark-viewer finalize [call] [--force]      write the accurate transcript by hand (a stopped call gets it on its own)
 #
 # Settings come from the environment or ~/.config/hark-viewer.env:
-#   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER
+#   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER, HARK_VIEWER_MW
 set -euo pipefail
 
 here="${0:A:h}"
@@ -32,13 +34,29 @@ serve() {
 case "${1:-}" in
   open) serve; browse "$base/" ;;
   stop) api -X POST "$base/api/stop"; print ;;
+  restart)
+    data='{}'; [[ "${2:-}" == --force ]] && data='{"force": true}'   # --force: also a call last recorded over an hour ago
+    out="$(api -X POST --max-time 60 --data-binary "$data" -w '\n%{http_code}' "$base/api/restart")"
+    print -r -- "${out%$'\n'*}"
+    [[ "${out##*$'\n'}" == 200 ]] || exit 70 ;;
   quit)
+    active() { api "$base/api/status" 2>/dev/null | grep -q '"active": true'; }
+    was=0; active && was=1
     api -X POST "$base/api/stop" >/dev/null 2>&1 || true
-    pkill -TERM -x hark 2>/dev/null || true       # SIGTERM lets hark finalise the audio file
+    if (( was )); then
+      # hark says stopped before its capture has finished writing the audio. Killing it now would cut the
+      # recording short, so wait until the file has stopped changing. Then the accurate transcript, which is
+      # the server's job and the server is about to go.
+      python3 "$here/postprocess.py" --settle-only current || true
+      nohup python3 "$here/postprocess.py" current >> "$HARK_VIEWER_ROOT/.postprocess.log" 2>&1 &!
+    fi
+    # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just finished.
+    pkill -TERM -f "hark --remote-control" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
     pkill -f "$here/server.py" 2>/dev/null || true
     # Wait for it to go: starting again while a capture is still finishing gives an empty recording.
-    for i in {1..40}; do pgrep -x hark >/dev/null || break; sleep 0.25; done ;;
+    for i in {1..40}; do pgrep -f "hark --remote-control" >/dev/null || break; sleep 0.25; done ;;
   relabel) shift; exec python3 "$here/relabel_speakers.py" "$@" ;;
+  finalize) shift; exec python3 "$here/postprocess.py" "$@" ;;
   *)
     serve
     workspace="${1:-calls}"; shift || true

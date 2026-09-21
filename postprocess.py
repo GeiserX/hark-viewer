@@ -19,6 +19,8 @@ This file also holds what `server.py` needs to read a call made of parts.
 import argparse
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -35,6 +37,10 @@ FINAL = "transcript.final.json"
 MW_OUT = "transcript.mw.txt"
 CHUNK = float(os.environ.get("HARK_VIEWER_CHUNK", "600"))          # a part hark refuses is retried in pieces this long
 MIN_PIECE = float(os.environ.get("HARK_VIEWER_MIN_PIECE", "20"))   # a piece this short that still fails is skipped
+# hark reports `stopped` before its capture has finished writing the audio, and says nothing when it has.
+SETTLE = float(os.environ.get("HARK_VIEWER_SETTLE", "5"))            # a recording this long unchanged is finished
+SETTLE_CAP = float(os.environ.get("HARK_VIEWER_SETTLE_CAP", "120"))  # and past this the job goes on regardless
+TMP_PREFIX = "hark-viewer-job-"
 MAX_FAILURES = 25   # per part. A hark that refuses everything (a missing flag, a missing model) must not be bisected for an hour.
 
 
@@ -121,18 +127,49 @@ def read_status(folder):
         return None
     if not isinstance(st, dict):
         return None
-    if st.get("state") == "running" and not alive(st.get("pid")):
+    if st.get("state") == "running" and not alive(st.get("pid"), st.get("started")):
         st["state"] = "failed"
         st["error"] = "the job died before it finished; run `hark-viewer finalize --force`"
     return st
 
 
-def alive(pid):
+def alive(pid, started=None):
+    """Is this the job that wrote `started`? A zombie is dead, and so is a stranger that got the same pid later."""
     try:
-        os.kill(int(pid), 0)
-        return True
+        run = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+                             env={**os.environ, "LC_ALL": "C"})
+        stat, born = run.stdout.strip().split(None, 1)
+        born = time.mktime(time.strptime(born.strip(), "%a %b %d %H:%M:%S %Y"))
     except (OSError, TypeError, ValueError):
         return False
+    if stat.startswith("Z"):
+        return False
+    return not isinstance(started, (int, float)) or born <= started + 2   # the job writes `started` after it is born
+
+
+def settle(paths):
+    """Wait until no recording has changed for SETTLE seconds. Returns (seconds waited, gave up at the cap)."""
+    began = time.time()
+    while True:
+        newest = 0.0
+        for path in paths:
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+        if time.time() - newest > SETTLE:
+            return round(time.time() - began, 1), False
+        if time.time() - began > SETTLE_CAP:
+            return round(time.time() - began, 1), True
+        time.sleep(min(0.5, SETTLE / 5))
+
+
+def sweep_tmp():
+    """Scratch folders of jobs that were killed before they could clean up. Each holds up to 38 MB of WAV."""
+    for old in Path(tempfile.gettempdir()).glob(TMP_PREFIX + "*"):
+        pid = old.name[len(TMP_PREFIX):].split("-")[0]
+        if not alive(pid):
+            shutil.rmtree(old, ignore_errors=True)
 
 
 # ---- the job ----
@@ -274,17 +311,26 @@ def mw_skip():
     return None
 
 
+class Terminated(BaseException):
+    """SIGTERM. A BaseException, so it passes the step's `except Exception` and unwinds the scratch folder."""
+
+
 def main():
     ap = argparse.ArgumentParser(description="Write the accurate transcript of a finished call.")
     ap.add_argument("call", nargs="?", default="current",
                     help="call folder: absolute, workspace/name under HARK_VIEWER_ROOT, or current")
     ap.add_argument("--force", action="store_true", help="run again even when postprocess.json exists")
+    ap.add_argument("--settle-only", action="store_true", help="wait until hark has finished writing the audio, do nothing else")
     args = ap.parse_args()
 
     folder = Path(args.call).expanduser()
     folder = (folder if folder.is_absolute() else ROOT / args.call).resolve()
     if not folder.is_dir():
         sys.exit(f"finalize: no such call folder: {folder}")
+    audios = [folder / part["audio"] for part in parts_of(folder)]
+    if args.settle_only:
+        settle(audios)
+        return
 
     status_path = folder / STATUS
     if args.force:
@@ -292,17 +338,20 @@ def main():
         if old and old.get("state") == "running":
             sys.exit(f"finalize: already running for this call (pid {old.get('pid')})")
         status_path.unlink(missing_ok=True)
+    steps = [("final", step_final, None), ("mw", step_mw, mw_skip())]
+    status = {"state": "running", "pid": os.getpid(), "started": time.time(), "finished": None, "settled": None,
+              "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None, "skipped_spans": []}
+                        for name, _, _ in steps}}
+    # The one-run-per-call lock. Linked into place whole, so nobody ever reads it empty, not even after a kill.
+    first = status_path.with_name(f"{STATUS}.{os.getpid()}.tmp")
+    first.write_text(json.dumps(status, indent=1))
     try:
-        os.close(os.open(status_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))   # the one-run-per-call lock
+        os.link(first, status_path)
     except FileExistsError:
         print(f"finalize: {status_path} exists, nothing to do (--force runs again)")
         return
-
-    try:
-        os.nice(10)                                   # a new call may already be recording
-    except OSError:
-        pass
-    status = {"state": "running", "pid": os.getpid(), "started": time.time(), "finished": None, "steps": {}}
+    finally:
+        first.unlink(missing_ok=True)
 
     def save():
         write_atomic(status_path, json.dumps(status, indent=1))
@@ -310,28 +359,43 @@ def main():
     def log(message):
         print(f"{time.strftime('%H:%M:%S')} {folder.name}: {message}", file=sys.stderr, flush=True)
 
-    steps = [("final", step_final, None), ("mw", step_mw, mw_skip())]
-    for name, _, _ in steps:
-        status["steps"][name] = {"state": "pending", "started": None, "finished": None, "error": None, "skipped_spans": []}
-    save()
-    with tempfile.TemporaryDirectory(prefix="hark-viewer-") as tmp:
-        for name, run, skip in steps:
-            step = status["steps"][name]
-            if skip:
-                step.update(state="skipped", error=skip)
+    def terminated(*_):
+        raise Terminated()
+
+    signal.signal(signal.SIGTERM, terminated)
+    try:
+        os.nice(10)                                   # a new call may already be recording
+    except OSError:
+        pass
+    sweep_tmp()
+    try:
+        waited, capped = settle(audios)
+        status["settled"] = {"waited": waited, "capped": capped}
+        if capped:
+            log(f"the audio was still changing after {waited:.0f} s, going on anyway")
+        save()
+        with tempfile.TemporaryDirectory(prefix=f"{TMP_PREFIX}{os.getpid()}-") as tmp:
+            for name, run, skip in steps:
+                step = status["steps"][name]
+                if skip:
+                    step.update(state="skipped", error=skip)
+                    save()
+                    continue
+                step.update(state="running", started=time.time())
                 save()
-                continue
-            step.update(state="running", started=time.time())
-            save()
-            try:
-                step["skipped_spans"] = run(folder, tmp, log)
-                step["state"] = "done"
-            except Exception as e:                    # noqa: BLE001 - the status file is the only place anyone looks
-                step.update(state="failed", error=str(e))
-                log(f"{name} failed: {e}")
-            step["finished"] = time.time()
-            save()
-    status.update(state="done" if status["steps"]["final"]["state"] == "done" else "failed", finished=time.time())
+                try:
+                    step["skipped_spans"] = run(folder, tmp, log)
+                    step["state"] = "done"
+                except Exception as e:                # noqa: BLE001 - the status file is the only place anyone looks
+                    step.update(state="failed", error=str(e))
+                    log(f"{name} failed: {e}")
+                step["finished"] = time.time()
+                save()
+        status["state"] = "done" if status["steps"]["final"]["state"] == "done" else "failed"
+    except Terminated:
+        status.update(state="failed", error="terminated; run `hark-viewer finalize --force`")
+        log("terminated")
+    status["finished"] = time.time()
     save()
     sys.exit(0 if status["state"] == "done" else 1)
 

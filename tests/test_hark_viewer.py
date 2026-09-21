@@ -87,12 +87,15 @@ class Job(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.log = self.tmp / "calls.log"
+        self.scratch = self.tmp / "scratch"
+        self.scratch.mkdir()
 
     def run_job(self, folder, *args, **env):
         return subprocess.run(
             [sys.executable, str(REPO / "postprocess.py"), str(folder), *args], capture_output=True, text=True,
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_BIN": str(HERE / "fake_hark.py"),
-                 "HARK_VIEWER_MW": str(HERE / "fake_mw.py"), "FAKE_LOG": str(self.log), **env})
+                 "HARK_VIEWER_MW": str(HERE / "fake_mw.py"), "FAKE_LOG": str(self.log), "HARK_VIEWER_SETTLE": "0.3",
+                 "TMPDIR": str(self.scratch), **env})
 
     def calls(self, who):
         return [l for l in self.log.read_text().splitlines() if l.startswith(who + " ")] if self.log.exists() else []
@@ -171,54 +174,98 @@ class Job(unittest.TestCase):
 
     def test_a_job_that_died_reads_as_failed_not_running(self):
         folder = make_call(self.tmp, [(0, [])])
-        dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
-        (folder / "postprocess.json").write_text(json.dumps({"state": "running", "pid": dead.pid, "steps": {}}))
+        zombie = subprocess.Popen([sys.executable, "-c", "pass"])          # never waited for, as a server that does not reap
+        self.addCleanup(zombie.wait)
+        time.sleep(0.5)
+        (folder / "postprocess.json").write_text(json.dumps({"state": "running", "pid": zombie.pid, "steps": {}}))
         self.assertEqual(postprocess.read_status(folder)["state"], "failed")
-        (folder / "postprocess.json").write_text(json.dumps({"state": "running", "pid": os.getpid(), "steps": {}}))
+        mine = {"state": "running", "pid": os.getpid(), "started": time.time(), "steps": {}}
+        (folder / "postprocess.json").write_text(json.dumps(mine))
         self.assertEqual(postprocess.read_status(folder)["state"], "running")
+        # the same pid, but the job that wrote this started long before this process was born: a reused pid
+        (folder / "postprocess.json").write_text(json.dumps({**mine, "started": time.time() - 86400}))
+        self.assertEqual(postprocess.read_status(folder)["state"], "failed")
 
+    def keep_writing(self, audio, seconds):
+        """hark, still writing the audio after it said stopped."""
+        stop = time.time() + seconds
 
-class FakeAgent:
-    """hark's remote-control agent, as far as server.py uses it."""
+        def capture():
+            while time.time() < stop:
+                with open(audio, "ab") as f:
+                    f.write(b"tail")
+                time.sleep(0.05)
+        writer = threading.Thread(target=capture)
+        writer.start()
+        self.addCleanup(writer.join)
 
-    def __init__(self):
-        agent = self
-        self.session, self.seen, self.refuse_start = None, [], False
+    def test_the_job_waits_until_hark_has_finished_writing_the_audio(self):
+        folder = make_call(self.tmp, [(0, [])])
+        self.keep_writing(folder / "audio.opus", 1.5)
+        self.assertEqual(self.run_job(folder, HARK_VIEWER_SETTLE="0.5", HARK_VIEWER_MW="off").returncode, 0)
+        status = json.loads((folder / "postprocess.json").read_text())
+        self.assertGreaterEqual(status["steps"]["final"]["started"], (folder / "audio.opus").stat().st_mtime + 0.5)
+        self.assertFalse(status["settled"]["capped"])
+        self.assertGreaterEqual(status["settled"]["waited"], 1.4)
 
-        class H(BaseHTTPRequestHandler):
-            def log_message(self, *a):
+    def test_the_wait_for_the_audio_has_a_cap_and_says_when_it_hit_it(self):
+        folder = make_call(self.tmp, [(0, [])])
+        self.keep_writing(folder / "audio.opus", 3)
+        run = self.run_job(folder, HARK_VIEWER_SETTLE="0.5", HARK_VIEWER_SETTLE_CAP="1", HARK_VIEWER_MW="off")
+        self.assertEqual(run.returncode, 0)
+        self.assertTrue(json.loads((folder / "postprocess.json").read_text())["settled"]["capped"])
+
+    def popen_job(self, folder, sleep, **kw):
+        return subprocess.Popen(
+            [sys.executable, str(REPO / "postprocess.py"), str(folder)], stderr=subprocess.DEVNULL, **kw,
+            env={**os.environ, "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log),
+                 "HARK_VIEWER_SETTLE": "0.3", "TMPDIR": str(self.scratch), "FAKE_HARK_SLEEP": sleep})
+
+    def start_slow_job(self, folder):
+        job = self.popen_job(folder, "30")
+        self.addCleanup(job.wait)
+        self.addCleanup(job.kill)
+        end = time.time() + 15
+        while time.time() < end and not self.calls("hark"):
+            time.sleep(0.05)
+        self.assertTrue(self.calls("hark"), "the job never reached hark")
+        return job
+
+    def test_a_terminated_job_cleans_up_and_says_it_failed(self):
+        folder = make_call(self.tmp, [(0, [])])
+        job = self.start_slow_job(folder)
+        self.assertEqual(len(list(self.scratch.glob("hark-viewer-job-*"))), 1)
+        job.terminate()
+        job.wait(15)
+        self.assertEqual(list(self.scratch.glob("hark-viewer-job-*")), [])
+        status = json.loads((folder / "postprocess.json").read_text())
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("terminated", status["error"])
+
+    def test_a_killed_job_reads_as_failed_can_be_forced_and_its_scratch_is_swept(self):
+        folder = make_call(self.tmp, [(0, [])])
+        job = self.start_slow_job(folder)
+        job.kill()
+        job.wait(15)
+        left = list(self.scratch.glob("hark-viewer-job-*"))
+        self.assertEqual(len(left), 1)
+        self.assertEqual(postprocess.read_status(folder)["state"], "failed")
+        self.assertEqual(self.run_job(folder, "--force", HARK_VIEWER_MW="off").returncode, 0)
+        self.assertEqual(postprocess.read_status(folder)["state"], "done")
+        self.assertFalse(left[0].exists())
+
+    def test_the_status_file_is_never_empty_and_only_one_of_four_racing_jobs_runs(self):
+        folder = make_call(self.tmp, [(0, [])])
+        jobs = [self.popen_job(folder, "1", stdout=subprocess.DEVNULL) for _ in range(4)]
+        seen = set()
+        while any(j.poll() is None for j in jobs):
+            try:
+                seen.add(bool((folder / "postprocess.json").read_text().strip()))
+            except OSError:
                 pass
-
-            def answer(self, code, body):
-                raw = json.dumps(body).encode()
-                self.send_response(code)
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-
-            def do_GET(self):
-                self.answer(200, {"session": agent.session})
-
-            def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-                agent.seen.append((self.path, body))
-                if self.path == "/start":
-                    if agent.refuse_start:
-                        return self.answer(500, {"error": "no capture"})
-                    if agent.session:
-                        time.sleep(0.6)      # a real capture takes a moment to come up: the watcher gets to see "stopped" in between
-                    Path(body["audio"]).write_bytes(b"audio")
-                    agent.session = {"state": "recording", "elapsed": 0, "muted": False, "id": "X",
-                                     "audio": body["audio"], "transcript": body["transcript"]}
-                    return self.answer(201, {"id": "X"})
-                if self.path == "/stop" and agent.session:
-                    agent.session = {**agent.session, "state": "stopped"}
-                self.answer(200, {})
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.assertEqual(seen, {True})
+        self.assertEqual(len(self.calls("hark")), 1)
+        self.assertEqual([p.name for p in folder.glob("postprocess.json.*")], [])
 
 
 def free_port():
@@ -227,30 +274,38 @@ def free_port():
         return s.getsockname()[1]
 
 
-class Server(unittest.TestCase):
+class ServerCase(unittest.TestCase):
+    """server.py on spare ports. It starts the fake agent itself, the way it starts hark."""
+    WATCH = "0.1"
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.agent = FakeAgent()
-        self.addCleanup(self.agent.httpd.shutdown)
-        self.port = free_port()
-        self.assertNotIn(self.port, (8473, 8474))
+        self.log = self.tmp / "calls.log"
+        self.port, self.agent_port = free_port(), free_port()
+        self.assertFalse({self.port, self.agent_port} & {8473, 8474})
         self.proc = subprocess.Popen(
-            [sys.executable, str(REPO / "server.py")], stderr=subprocess.PIPE,
+            [sys.executable, str(REPO / "server.py")], stderr=subprocess.DEVNULL,
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_VIEWER_PORT": str(self.port),
-                 "HARK_REMOTE_CONTROL_PORT": str(self.agent.port), "HARK_VIEWER_WATCH": "0.1",
-                 "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.tmp / "calls.log")})
-        self.addCleanup(self.proc.stderr.close)
+                 "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
+                 "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
+                 "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log)})
+        self.addCleanup(self.kill_agent)
         self.addCleanup(self.proc.wait)
         self.addCleanup(self.proc.terminate)
         self.wait_for(lambda: self.get("/api/status")[0] == 200, "the server to answer")
 
-    def get(self, path, method="GET", body=None):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method=method,
+    def kill_agent(self):
+        run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{self.agent_port}", "-sTCP:LISTEN"], capture_output=True, text=True)
+        for pid in run.stdout.split():
+            os.kill(int(pid), 9)
+
+    def get(self, path, method="GET", body=None, port=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{port or self.port}{path}", method=method,
                                      data=json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None),
                                      headers={"X-Hark-Viewer": "1"})
         try:
-            with opener.open(req, timeout=40) as r:
+            with opener.open(req, timeout=60) as r:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
@@ -261,7 +316,20 @@ class Server(unittest.TestCase):
         code, raw = self.get(path, method, body)
         return code, json.loads(raw or b"{}")
 
-    def wait_for(self, test, what, seconds=15):
+    def fake(self, **settings):
+        self.assertEqual(self.get("/_fake", "POST", settings, self.agent_port)[0], 200)
+
+    def seen(self, who="agent"):
+        """What the fake agent was asked, as [(path, body)]. For the fake hark, its raw log lines."""
+        lines = [l for l in self.log.read_text().splitlines() if l.startswith(who + " ")] if self.log.exists() else []
+        if who != "agent":
+            return lines
+        return [(l.split(" ", 3)[2], json.loads(l.split(" ", 3)[3])) for l in lines if not l.endswith(" launched")]
+
+    def launches(self):
+        return [l.split()[1] for l in self.log.read_text().splitlines() if l.endswith(" launched")]
+
+    def wait_for(self, test, what, seconds=20):
         end = time.time() + seconds
         while time.time() < end:
             if test():
@@ -269,26 +337,37 @@ class Server(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"waited {seconds} s for {what}")
 
+    def new(self, title=""):
+        code, made = self.api("/api/new", "POST", {"workspace": "work", "title": title})
+        self.assertEqual(code, 200, made)
+        return made, Path(made["folder"])
+
+
+class Server(ServerCase):
     def test_call_audio_reaches_the_page_untouched_and_is_absent_on_an_older_hark(self):
-        self.assertEqual(self.api("/api/new", "POST", {"workspace": "work", "title": "t"})[0], 200)
+        self.new()
         self.assertNotIn("callAudio", self.api("/api/status")[1]["session"])
         for report in ({"state": "dead", "silentFor": 42, "restarts": 2}, {"state": "silent", "silentFor": 7.5, "restarts": 0}):
-            self.agent.session = {**self.agent.session, "callAudio": report}
+            self.fake(session={"callAudio": report})
             code, st = self.api("/api/status")
             self.assertTrue(st["active"])
             self.assertEqual(st["session"]["callAudio"], report)
 
     def test_restart_records_on_into_the_same_folder_and_does_not_end_the_call(self):
-        code, made = self.api("/api/new", "POST", {"workspace": "work", "title": "sync"})
-        self.assertEqual(code, 200)
-        folder = Path(made["folder"])
+        # hark as it is: `stopped` at once, the capture finishing for 5 s behind it, /start refused meanwhile.
+        self.fake(finish=5)
+        made, folder = self.new("sync")
         first = json.loads((folder / "meta.json").read_text())["started"]
 
         code, again = self.api("/api/restart", "POST")
-        self.assertEqual((code, again["call"], again["part"]), (200, made["call"], 2))
-        self.assertEqual([p for p, _ in self.agent.seen], ["/start", "/stop", "/start"])
-        self.assertEqual(self.agent.seen[2][1]["audio"], str(folder / "audio.part2.opus"))
-        self.assertEqual(self.agent.seen[2][1]["transcript"], str(folder / "transcript.part2.json"))
+        self.assertEqual((code, again.get("call"), again.get("part")), (200, made["call"], 2), again)
+        asked = self.seen()
+        self.assertEqual([p for p, _ in asked[:2]], ["/start", "/stop"])
+        self.assertGreater(len(asked), 3)                                # it was refused while finishing, and kept asking
+        self.assertEqual({p for p, _ in asked[2:]}, {"/start"})
+        self.assertEqual(asked[-1][1]["audio"], str(folder / "audio.part2.opus"))
+        self.assertEqual(asked[-1][1]["transcript"], str(folder / "transcript.part2.json"))
+        self.assertEqual(len(self.launches()), 1)                        # patience was enough, the agent was left alone
         meta = json.loads((folder / "meta.json").read_text())
         self.assertEqual(meta["started"], first)
         self.assertEqual([(p["n"], p["audio"], p["transcript"]) for p in meta["parts"]],
@@ -310,24 +389,89 @@ class Server(unittest.TestCase):
         time.sleep(1)
         self.assertFalse((folder / "postprocess.json").exists())
 
-        # The real stop is. The job runs on its own and covers both parts.
+        # The real stop is. The job waits for the capture to finish writing, then covers both parts, once.
+        self.fake(finish=2)
         self.assertEqual(self.api("/api/stop", "POST")[0], 200)
         self.wait_for(lambda: (self.api("/api/status")[1]["postprocess"] or {}).get("state") == "done", "the final transcript")
+        status = self.api("/api/status")[1]["postprocess"]
+        self.assertGreaterEqual(status["steps"]["final"]["started"], (folder / "audio.part2.opus").stat().st_mtime + 1)
         self.assertEqual([(e["start"], e["text"]) for e in postprocess.read_lines(folder / "transcript.final.json")],
                          [(1.0, "audio.opus"), (101.0, "audio.part2.opus")])
-        self.assertEqual(self.api("/api/status")[1]["postprocess"]["steps"]["mw"]["state"], "skipped")
-        time.sleep(0.5)                                                  # and it ran once
-        log = (self.tmp / "calls.log").read_text().splitlines()
-        self.assertEqual(len(log), 2, log)
+        self.assertEqual(status["steps"]["mw"]["state"], "skipped")
+        time.sleep(0.5)
+        self.assertEqual(len(self.seen("hark")), 2, self.seen("hark"))
+
+    def test_a_wedged_capture_gets_a_new_agent_and_the_call_goes_on(self):
+        self.fake(wedged=True, finish=1)
+        made, folder = self.new()
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("part")), (200, 2), again)
+        self.assertEqual(len(set(self.launches())), 2)                   # hark refuses every start once wedged: only a new agent helps
+        st = self.api("/api/status")[1]
+        self.assertEqual((st["active"], st["call"], st["parts"]), (True, made["call"], 2))
+
+    def test_restart_brings_back_an_agent_that_died_and_goes_on_in_the_current_call(self):
+        made, folder = self.new()
+        self.kill_agent()
+        self.wait_for(lambda: not self.api("/api/status")[1]["agent"], "the agent to be gone")
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("call"), again.get("part")), (200, made["call"], 2), again)
+        self.assertTrue((folder / "audio.part2.opus").exists())
+
+    def test_restart_after_hark_reports_the_session_failed(self):
+        made, folder = self.new()
+        self.fake(session={"state": "failed", "error": "captured no audio"})
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("call"), again.get("part")), (200, made["call"], 2), again)
+
+    def test_restart_of_a_call_with_no_start_time_does_not_stack_part_2_on_part_1(self):
+        made, folder = self.new()
+        time.sleep(1.2)
+        (folder / "meta.json").write_text(json.dumps({"workspace": "work", "title": ""}))
+        self.assertEqual(self.api("/api/restart", "POST")[0], 200)
+        meta = json.loads((folder / "meta.json").read_text())
+        self.assertAlmostEqual(meta["started"], (folder / "audio.opus").stat().st_birthtime, delta=0.01)
+        self.assertGreater(postprocess.offset_of(meta["parts"][1], meta), 1.0)
 
     def test_restart_with_nothing_recording_is_refused(self):
         code, body = self.api("/api/restart", "POST")
         self.assertEqual(code, 409)
-        self.assertEqual(self.agent.seen, [])
+        self.assertEqual(self.seen(), [])
+
+    def test_a_finished_call_is_not_restarted(self):
+        made, folder = self.new()
+        self.assertEqual(self.api("/api/stop", "POST")[0], 200)
+        self.wait_for(lambda: (folder / "postprocess.json").exists(), "the job")
+        self.assertEqual(self.api("/api/restart", "POST")[0], 409)
+        self.kill_agent()                                                # and a new agent, which knows no session, changes nothing
+        self.wait_for(lambda: not self.api("/api/status")[1]["agent"], "the agent to be gone")
+        self.assertEqual(self.api("/api/restart", "POST")[0], 409)
+        self.assertFalse((folder / "audio.part2.opus").exists())
 
     def test_a_second_call_while_one_records_is_still_refused(self):
-        self.assertEqual(self.api("/api/new", "POST", {"workspace": "work", "title": ""})[0], 200)
+        self.new()
         self.assertEqual(self.api("/api/new", "POST", {"workspace": "work", "title": ""})[0], 409)
+
+    def test_a_job_the_server_started_and_someone_killed_reads_as_failed(self):
+        made, folder = self.new()
+        self.fake(finish=3)                                              # keeps the job waiting on the audio, so it is there to kill
+        self.assertEqual(self.api("/api/stop", "POST")[0], 200)
+        self.wait_for(lambda: (folder / "postprocess.json").exists(), "the job")
+        pid = json.loads((folder / "postprocess.json").read_text())["pid"]
+        os.kill(pid, 9)                                                  # a child of the server, which has to reap it
+        self.wait_for(lambda: subprocess.run(["ps", "-p", str(pid)], capture_output=True).returncode != 0, "the zombie to go", 10)
+        self.wait_for(lambda: self.api("/api/status")[1]["postprocess"]["state"] == "failed", "the dead job to read as failed", 10)
+
+
+class SlowWatcher(ServerCase):
+    WATCH = "60"
+
+    def test_a_call_that_ended_inside_the_watchers_tick_still_gets_its_transcript(self):
+        first, folder = self.new("one")
+        self.assertEqual(self.api("/api/stop", "POST")[0], 200)
+        second, _ = self.new("two")
+        self.assertNotEqual(first["call"], second["call"])
+        self.wait_for(lambda: (postprocess.read_status(folder) or {}).get("state") == "done", "the first call's transcript")
 
 
 if __name__ == "__main__":

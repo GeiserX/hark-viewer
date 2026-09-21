@@ -90,7 +90,7 @@
     <button class="idle go" id="start" type="submit">● Record</button>
     <button class="busy" id="mute" type="button">Mute mic</button>
     <button class="busy" id="pause" type="button">Pause</button>
-    <button class="busy" id="restart" type="button" title="Capture broke? Stop and record on into the same call">↻ Restart</button>
+    <button id="restart" type="button" hidden title="Capture broke? Stop and record on into the same call">↻ Restart</button>
     <button class="busy stop" id="stop" type="button">■ Stop</button>
   </form>
 </header>
@@ -223,7 +223,7 @@ function notice() {
     if (a.state === 'dead') { kind = 'dead'; text = 'CALL AUDIO LOST for ' + span(a.silentFor || 0) + '. Audio is playing and hark hears none of it. hark is restarting the capture' + (n ? ' (' + n + ' so far)' : '') + '. If this stays, press Restart.'; }
     else if (a.state === 'silent') { kind = 'quiet'; text = 'call side quiet for ' + span(a.silentFor || 0); }
     else if (a.state === 'recovered') { kind = 'fine'; text = 'call audio is back' + (n ? ' after ' + n : ''); }
-  } else if (mine()) {
+  } else if (mine() && failures < 3) {           // out of touch with the server, the status is stale and says nothing
     // Anything new counts as speech: a line, a change in the open line, leaving a pause.
     const key = [shown, s.state, s.partial && s.partial.text].join('|');
     if (key !== heardKey || s.state !== 'recording') { heardKey = key; heardAt = Date.now(); }
@@ -257,7 +257,8 @@ function paint() {
   $('state').textContent = label; $('meta').textContent = meta;
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
   $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
-  $('restart').hidden = !mine();                 // restarting is for the call on screen only
+  // Restarting is for the call on screen only: while it records, or once hark reports its capture failed.
+  $('restart').hidden = !(mine() || (s && s.state === 'failed' && st.call === call));
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
   notice();
   $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';

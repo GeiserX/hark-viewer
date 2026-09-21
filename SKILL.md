@@ -52,7 +52,7 @@ hark can lose the call side while it still says `recording`. `/api/status` repor
 
 An older hark sends no `callAudio`. The page then shows an amber "no new lines for 1:35" note after 90 s without a line. That is a guess, so ask the user whether people are talking before you restart.
 
-`hark-viewer restart` stops the recording and starts a new part in the same call folder. Done when it prints `{"call", "part"}` and `/api/status` reports `"active": true` with the same call. Use it instead of stop and start, which makes a second call folder on a second clock.
+`hark-viewer restart` stops the recording and starts a new part in the same call folder. It also works when the session is `failed` or the agent died. It can take 20 s, because hark refuses a start while the old capture finishes, and a wedged capture costs an agent restart. Done when it prints `{"call", "part"}` and `/api/status` reports `"active": true` with the same call. Use it instead of stop and start, which makes a second call folder on a second clock.
 
 ## Stop
 

@@ -31,7 +31,10 @@ START = {"system": True, "mix": True, "speakers": True, "captureBackend": "corea
          # Mic on the left channel, the call on the right, so a later pass can still tell them
          # apart: `hark -i audio.opus --speakers --speaker-mode source` gives You and Others.
          # A hark without --tracks ignores the key and records a mixed file.
-         "tracks": "stereo"}
+         "tracks": "stereo",
+         # Stream the line being spoken (about 2.5 s behind) instead of waiting for a
+         # pause; the page shows it as the grey row. A hark without it ignores the key.
+         "liveStreaming": True}
 AUDIO = "audio.opus"
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy

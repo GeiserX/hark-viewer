@@ -11,7 +11,7 @@ hark writes a call's transcript to a file while people are still speaking. hark-
 - Records the whole computer plus your microphone through hark's Core Audio tap. No per-app tracking, no virtual audio driver.
 - Keeps your microphone on the left channel and the call on the right, so a later pass can still tell them apart.
 - Shows each utterance a moment after the speaker pauses, labelled `You` for the microphone and `Speaker 1..N` for voices on the computer side.
-- Shows the line still being spoken in grey under the finished ones, when hark reports one. Run `hark config set live-streaming true` once and the next recording streams. Text then lands about 2.5 seconds behind the audio and the open line grows in place until it closes. It is never corrected as it grows. With the setting off the page behaves as before.
+- Shows the line still being spoken in grey under the finished ones, when hark reports one. The start request asks for it (`liveStreaming` in `START`), so a hark that can stream does, and one that cannot ignores the key. Text then lands about 2.5 seconds behind the audio and the open line grows in place until it closes. It is never corrected as it grows. With the setting off the page behaves as before.
 - Starts, stops, pauses and mutes from the page. No terminal window stays open.
 - Files every call in its own folder and keeps the audio, so you can run it through a larger model afterwards.
 - Runs on `127.0.0.1` only. Nothing leaves the machine.

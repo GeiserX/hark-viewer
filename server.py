@@ -30,6 +30,11 @@ CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 LIVE = ("recording", "paused")
 STALE = 3600                                                # a call not written to for this long is not restarted unasked
 STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
+# hark answers a start only once the capture is really running, and opening a cold recognizer
+# model took 12.7 s on the first streaming call after a reboot. hark gives up waiting at 60 s
+# and answers `capturing: false`, so this has to outlast that or a recording that did start
+# would be reported as a failure.
+START_TIMEOUT = float(os.environ.get("HARK_VIEWER_START_TIMEOUT", "90"))
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # What every call is recorded with. Opus because it stays playable while hark is
 # still writing it, so a crash costs nothing; m4a and flac hold back the header
@@ -51,11 +56,11 @@ turn = threading.Lock()
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy
 
 
-def hark(method, path, body=None):
+def hark(method, path, body=None, timeout=10):
     data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
     req = urllib.request.Request(HARK_URL + path, data=data, method=method)
     try:
-        with opener.open(req, timeout=10) as r:
+        with opener.open(req, timeout=timeout) as r:
             return r.status, json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         raw = e.read()
@@ -136,7 +141,7 @@ def start_recording(audio, transcript):
     body = {**START, "audio": str(audio), "transcript": str(transcript)}
     end = time.time() + STOP_WAIT
     while True:
-        code, answer = hark("POST", "/start", body)
+        code, answer = hark("POST", "/start", body, timeout=START_TIMEOUT)
         if code in (200, 201) or not (code == 409 and "finishing" in str(answer.get("error"))):
             return code, answer                             # hark answers a started recording with 201
         if time.time() >= end:
@@ -144,7 +149,7 @@ def start_recording(audio, transcript):
         time.sleep(0.5)
     if not relaunch_agent():
         return 502, {"error": f"the capture is wedged and the hark agent ({HARK_BIN}) did not come back"}
-    return hark("POST", "/start", body)
+    return hark("POST", "/start", body, timeout=START_TIMEOUT)
 
 
 def new_call(workspace, title):

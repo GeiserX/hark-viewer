@@ -377,6 +377,7 @@ def free_port():
 class ServerCase(unittest.TestCase):
     """server.py on spare ports. It starts the fake agent itself, the way it starts hark."""
     WATCH = "0.1"
+    EXTRA_ENV = {}
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
@@ -389,7 +390,8 @@ class ServerCase(unittest.TestCase):
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_VIEWER_PORT": str(self.port),
                  "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
                  "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
-                 "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log)})
+                 "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log),
+                 **self.EXTRA_ENV})
         self.addCleanup(self.kill_agent)
         self.addCleanup(self.proc.wait)
         self.addCleanup(self.proc.terminate)
@@ -591,6 +593,30 @@ class Server(ServerCase):
         os.kill(pid, 9)                                                  # a child of the server, which has to reap it
         self.wait_for(lambda: subprocess.run(["ps", "-p", str(pid)], capture_output=True).returncode != 0, "the zombie to go", 10)
         self.wait_for(lambda: self.api("/api/status")[1]["postprocess"]["state"] == "failed", "the dead job to read as failed", 10)
+
+
+class SlowStart(ServerCase):
+    """hark answers a start only once the capture is really running, and a cold recognizer
+    model kept that waiting 12.7 s. The page must wait it out instead of calling it a failure."""
+    EXTRA_ENV = {"FAKE_START_DELAY": "1.5", "HARK_VIEWER_START_TIMEOUT": "20"}
+
+    def test_a_start_that_takes_its_time_is_still_a_recording(self):
+        code, made = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 200, made)
+        call = made["call"]
+        self.assertTrue((self.tmp / call / "audio.opus").is_file())
+        self.assertTrue(self.api("/api/status")[1]["active"])
+
+
+class ImpatientStart(ServerCase):
+    """The control for the above: with a timeout under the start's own time, the page reports a
+    failure for a recording that did begin. That is what the old fixed 10 s timeout would do."""
+    EXTRA_ENV = {"FAKE_START_DELAY": "1.5", "HARK_VIEWER_START_TIMEOUT": "0.4"}
+
+    def test_a_timeout_shorter_than_the_start_reports_a_failure(self):
+        code, answer = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 502, answer)
+        self.assertIn("unreachable", str(answer))
 
 
 class SlowWatcher(ServerCase):

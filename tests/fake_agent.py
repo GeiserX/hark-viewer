@@ -59,6 +59,7 @@ class H(BaseHTTPRequestHandler):
             log.write(f"agent {os.getpid()} {self.path} {json.dumps(body)}\n")
         live = S["session"] and S["session"]["state"] in ("recording", "paused")
         if self.path == "/start":
+            time.sleep(float(os.environ.get("FAKE_START_DELAY", "0")))   # a cold model keeps a real start waiting
             if live:
                 return self.answer(409, {"error": "a recording is already active"})
             if finishing():

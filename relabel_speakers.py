@@ -210,19 +210,21 @@ def main():
     print(f"lines: {len(lines)} total, {len(lines) - len(others)} {MIC_LABEL}, {len(others)} other")
     print(f"matched: {covered}/{len(others)} non-{MIC_LABEL} lines, {changed} labels changed")
 
+    # The gate runs before the write. server.py serves transcript.speakers.json in
+    # place of the live file, so a relabel from the wrong spans must leave nothing behind.
+    share = covered / len(others) if others else 1.0
+    if share < args.min_coverage:
+        print(f"relabel: only {share:.0%} of the non-{MIC_LABEL} lines matched a span, below "
+              f"--min-coverage {args.min_coverage:.0%}; these labels are probably wrong, nothing written",
+              file=sys.stderr)
+        sys.exit(3)
+
     if args.dry_run:
         print("dry run: nothing written")
     else:
         write_atomic(folder / "transcript.speakers.json",
                      "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in out))
         print(f"wrote {folder / 'transcript.speakers.json'}")
-
-    share = covered / len(others) if others else 1.0
-    if share < args.min_coverage:
-        print(f"relabel: only {share:.0%} of the non-{MIC_LABEL} lines matched a span, below "
-              f"--min-coverage {args.min_coverage:.0%}; these labels are probably wrong",
-              file=sys.stderr)
-        sys.exit(3)
 
 
 if __name__ == "__main__":

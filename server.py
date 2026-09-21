@@ -163,10 +163,13 @@ class Handler(SimpleHTTPRequestHandler):
         # `hark-viewer relabel` writes transcript.speakers.json next to the live
         # file, same lines with the speakers corrected by an offline pass. Prefer
         # it, so the page and any agent reading the call get the better labels.
+        # Only while it is current: a line hark appended after the relabel makes the
+        # live file newer, and the page must keep seeing new lines.
         if path.endswith("/transcript.json"):
-            better = path[: -len("transcript.json")] + "transcript.speakers.json"
-            if Path(self.translate_path(better)).is_file():   # translate_path resolves under ROOT
-                self.path = better
+            live = Path(self.translate_path(path))            # translate_path resolves under ROOT
+            better = live.with_name("transcript.speakers.json")
+            if better.is_file() and (not live.is_file() or better.stat().st_mtime >= live.stat().st_mtime):
+                self.path = path[: -len("transcript.json")] + "transcript.speakers.json"
         super().do_GET()
 
     def do_POST(self):

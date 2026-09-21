@@ -11,6 +11,7 @@ hark writes a call's transcript to a file while people are still speaking. hark-
 - Records the whole computer plus your microphone through hark's Core Audio tap. No per-app tracking, no virtual audio driver.
 - Keeps your microphone on the left channel and the call on the right, so a later pass can still tell them apart.
 - Shows each utterance a moment after the speaker pauses, labelled `You` for the microphone and `Speaker 1..N` for voices on the computer side.
+- Shows the line still being spoken in grey under the finished ones, when hark reports one. The start request asks for it (`liveStreaming` in `START`), so a hark that can stream does, and one that cannot ignores the key. Text then lands about 2.5 seconds behind the audio and the open line grows in place until it closes. It is never corrected as it grows. With the setting off the page behaves as before.
 - Starts, stops, pauses and mutes from the page. No terminal window stays open.
 - Files every call in its own folder and keeps the audio, so you can run it through a larger model afterwards.
 - Runs on `127.0.0.1` only. Nothing leaves the machine.
@@ -39,6 +40,7 @@ cd hark-viewer
 ./hark-viewer open                 # open the page without recording
 ./hark-viewer stop                 # stop and save the call
 ./hark-viewer quit                 # stop the call, the page server and the hark agent
+./hark-viewer relabel              # fix the speaker labels of the call just finished
 ```
 
 The first recording asks for the Microphone and System Audio Recording permissions. macOS attributes them to the terminal app you ran the command from.
@@ -76,7 +78,7 @@ browser page  ──►  server.py :8474  ──►  hark --remote-control :8473
 
 | Request | Does |
 |---|---|
-| `GET /api/status` | Agent state, the active session, the call it belongs to, and the workspace folders |
+| `GET /api/status` | Agent state, the active session, the call it belongs to, and the workspace folders. The session carries `partial` while a streaming hark has a line open, and no such key otherwise |
 | `POST /api/new` with `{"workspace", "title"}` | Creates the call folder and starts recording |
 | `POST /api/stop`, `/pause`, `/resume`, `/mute`, `/unmute` | Forwarded to hark |
 
@@ -106,20 +108,41 @@ git clone https://github.com/GeiserX/hark-viewer.git ~/.claude/skills/record-cal
 
 Then `/record-call` starts a recording. While the call runs, ask the agent what was just said or what was decided, and it reads `~/Recordings/calls/current/transcript.json` before answering.
 
-### Getting your own voice back out
+### Fixing the speakers after the call
 
-The recording keeps the microphone on channel 0 and the call on channel 1, so the accurate pass afterwards can still say who spoke:
+Live speaker numbers are guessed as the audio arrives, so a long call with several voices reuses one number for two people. A diarizer that gets the whole recording at once does better:
 
 ```sh
-hark -i audio.opus --speakers --speaker-mode source -t final.json   # You / Others
-ffmpeg -i audio.opus -af "pan=mono|c0=c0" mic.wav                   # just your side (c0=c1 for the call)
+./hark-viewer relabel                                   # the call in `current`
+./hark-viewer relabel work/2026-09-21_101500 --dry-run   # counts only, writes nothing
 ```
 
-`--tracks` and `--speaker-mode source` on a file are unreleased, so this needs a hark built from [the pull requests](https://github.com/PhantomYdn/hark/issues/6) that add them, named through `HARK_BIN`. On a hark without `--tracks`, drop that key from `START` in [`server.py`](server.py) and the recording is a normal mixed file.
+[`relabel_speakers.py`](relabel_speakers.py) splits the call side of `audio.opus`, runs it through hark, and writes two files next to the recording:
+
+- `speakers.json`, the spans it found, so a second run needs no model
+- `transcript.speakers.json`, the live lines with the speaker of the span each one overlaps most
+
+It never touches `transcript.json`, and it leaves lines labelled `You` alone. [`server.py`](server.py) serves `transcript.speakers.json` in place of `transcript.json` when it exists, so the page and any agent reading the call get the better labels for free. A page already on screen keeps the rows it has drawn. Reload for the new colours. Run it once the call is over: a line hark appends after the relabel makes the live file the newer one, and the newer file is the one served.
+
+On the eight-person call this was built against, the live pass used three speaker numbers and the offline pass found all seven. 59 of the 69 non-`You` lines matched a span and the other 10 kept their live label. The run took eleven seconds. `relabel` exits 3 and writes nothing when fewer than 60% of the lines match, which catches spans belonging to a different recording.
+
+### Getting your own voice back out
+
+The recording keeps the microphone on channel 0 and the call on channel 1, so a manual pass can still tell them apart:
+
+```sh
+ffmpeg -i audio.opus -af "pan=mono|c0=c1" call.wav   # just the call (c0=c0 for your microphone)
+hark -i audio.opus --speakers --speaker-mode source -t final.json   # You / Others
+```
+
+**On hark 0.4.3, `hark -i audio.opus` transcribes your microphone and loses the call**, because it reads channel 0 of a stereo file and stops there. The result looks like a call nobody else spoke on. On one recording the stereo file gave 1544 characters of text, and the call channel alone gave 7891. Split the channel with `ffmpeg` first, which is what `relabel` does, or use a hark built from [the pull requests](https://github.com/PhantomYdn/hark/issues/6) that read both channels, named through `HARK_BIN`. `--speaker-mode source` on a file is unreleased for the same reason.
+
+A hark built from those branches can stop the offline pass with `Must be at least 300ms of 16kHz audio`. The recording is fine; the branches drop a diarized span shorter than the recognizer accepts. 0.4.3 never hits it, and `relabel --spans FILE` takes spans from any build that works.
 
 ## Limits
 
-- Live speaker numbers are a guess made as the audio arrives. Two similar voices can share a number. For an accurate transcript, run `audio.opus` through a full transcription pass after the call.
+- Live speaker numbers are a guess made as the audio arrives, and two voices can share a number. `hark-viewer relabel` fixes them once the call is over. A line that spans two offline speakers gets the one it overlaps most, because splitting it would need word timings `transcript.json` does not carry.
+- Relabelling is manual. Most of its ten seconds goes on the recognizer producing text the relabel then throws away, because hark has no way to diarize a file without transcribing it. A `hark speakers -i FILE` would make this near instant.
 - A line appears when the speaker pauses for about 0.7 seconds, or after 12 seconds of unbroken speech. Those two values are fixed inside hark.
 - hark records one microphone, the macOS default input.
 - Clock times drift by the length of any pause, because hark leaves paused time out of the recording.

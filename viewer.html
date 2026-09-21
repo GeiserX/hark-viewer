@@ -64,6 +64,10 @@
   .row.new { animation: rise .35s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
   #empty { max-width: 46em; margin: 18vh auto 0; color: var(--faint); text-align: center; font-size: .8em; }
+  /* The line still being spoken. Colour is set here because .row:nth-last-child above is not scoped to #lines. */
+  #partial { max-width: 46em; margin: 0 auto; color: var(--dim); }
+  #partial[hidden] { display: none; }   /* .row sets display: grid, which beats [hidden] in Firefox */
+  #partial .body { border-left-style: dashed; }
   #toast { position: fixed; left: 50%; top: 66px; transform: translateX(-50%); background: var(--rec); color: #fff; font-size: 13px; padding: 9px 16px; border-radius: 8px; display: none; max-width: 80vw; }
   #jump { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); border-radius: 999px; box-shadow: 0 6px 24px rgba(0,0,0,.35); display: none; }
   .scrolled #jump { display: block; }
@@ -85,6 +89,7 @@
 </header>
 <main id="scroller">
   <div id="lines"></div>
+  <div id="partial" class="row" hidden></div>
   <div id="empty"></div>
 </main>
 <div id="toast"></div>
@@ -114,7 +119,7 @@ async function post(path, body) {
 }
 
 function show(next) {           // switch the page to another call without a reload
-  call = next; shown = 0; lastWho = null; startMs = null; lastLineAt = null;
+  call = next; shown = 0; lastWho = null; startMs = null; lastLineAt = null; setPartial(null);
   lines.textContent = ''; $('title').textContent = '';
   history.replaceState(null, '', '?call=' + next);
 }
@@ -151,12 +156,33 @@ function render(entries) {
   }
 }
 
+// The line hark is still hearing. One element, rewritten in place: the rows in #lines
+// are append-only and never revisited, and transcript.json stays append-only too.
+// It must not touch lastWho or shown, or the next finished line loses its speaker header.
+function setPartial(p) {
+  const el = $('partial');
+  if (!p || !p.text || !mine()) { el.hidden = true; el.textContent = ''; return; }
+  if (el.children.length !== 2) {
+    el.textContent = '';
+    const t = document.createElement('time'), b = document.createElement('div');
+    b.className = 'body'; el.append(t, b);
+  }
+  const [t, b] = el.children;
+  if (p.speaker) { const h = hue(p.speaker); el.dataset.h = h; el.style.setProperty('--h', h); } else { delete el.dataset.h; }
+  t.textContent = startMs ? clock(startMs + p.start * 1000) : span(p.start);
+  t.title = span(p.start) + ' into the call';
+  b.textContent = p.text;
+  el.hidden = false;
+  if (pinned) scroller.scrollTop = scroller.scrollHeight;
+}
+
 async function poll() {
   try {
     st = await (await get('/api/status')).json();
     if (!call && st.call) show(st.call);                 // opened bare: follow the active or last call
     if (call) {
       if (!startMs) await loadMeta();
+      const before = shown;
       const r = await get('/' + call + '/transcript.json');
       if (r.ok) {
         const entries = [];
@@ -166,9 +192,12 @@ async function poll() {
         }
         render(entries);
       }
+      // /api/status was read first, so a line closed between the two reads would
+      // otherwise show twice for one poll: as the partial and as the new row.
+      setPartial(shown > before ? null : (st.session && st.session.partial));
     }
     failures = 0;
-  } catch { failures++; }
+  } catch { failures++; if (failures >= 3) setPartial(null); }   // out of touch with hark: the open line is stale
   paint();
 }
 
@@ -188,7 +217,7 @@ function paint() {
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
   $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
-  $('empty').style.display = shown ? 'none' : 'block';
+  $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';
   $('empty').textContent = mine() ? 'Listening. A line appears each time someone pauses.' : (call ? 'No transcript lines in this call.' : 'Press Record to start a call.');
   if (st && !filled && st.workspaces) {
     const names = [...new Set([params.get('workspace'), ...st.workspaces, 'calls'].filter(Boolean))];

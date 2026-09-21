@@ -3,6 +3,7 @@
 # hark-viewer open                           open the page without recording
 # hark-viewer stop                           stop and save the call being recorded
 # hark-viewer quit                           stop the call, the page server and the hark agent
+# hark-viewer relabel [call] [options]       fix the speaker labels of a finished call
 #
 # Settings come from the environment or ~/.config/hark-viewer.env:
 #   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER
@@ -37,6 +38,7 @@ case "${1:-}" in
     pkill -f "$here/server.py" 2>/dev/null || true
     # Wait for it to go: starting again while a capture is still finishing gives an empty recording.
     for i in {1..40}; do pgrep -x hark >/dev/null || break; sleep 0.25; done ;;
+  relabel) shift; exec python3 "$here/relabel_speakers.py" "$@" ;;
   *)
     serve
     workspace="${1:-calls}"; shift || true

@@ -30,8 +30,11 @@ CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 START = {"system": True, "mix": True, "speakers": True, "captureBackend": "coreaudio", "ifExists": "error",
          # Mic on the left channel, the call on the right, so a later pass can still tell them
          # apart: `hark -i audio.opus --speakers --speaker-mode source` gives You and Others.
-         # Needs a hark with --tracks; drop this key on a build that lacks it.
-         "tracks": "stereo"}
+         # A hark without --tracks ignores the key and records a mixed file.
+         "tracks": "stereo",
+         # Stream the line being spoken (about 2.5 s behind) instead of waiting for a
+         # pause; the page shows it as the grey row. A hark without it ignores the key.
+         "liveStreaming": True}
 AUDIO = "audio.opus"
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy
@@ -160,6 +163,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             return self.wfile.write(raw)
+        # `hark-viewer relabel` writes transcript.speakers.json next to the live
+        # file, same lines with the speakers corrected by an offline pass. Prefer
+        # it, so the page and any agent reading the call get the better labels.
+        # Only while it is current: a line hark appended after the relabel makes the
+        # live file newer, and the page must keep seeing new lines.
+        if path.endswith("/transcript.json"):
+            live = Path(self.translate_path(path))            # translate_path resolves under ROOT
+            better = live.with_name("transcript.speakers.json")
+            if better.is_file() and (not live.is_file() or better.stat().st_mtime >= live.stat().st_mtime):
+                self.path = path[: -len("transcript.json")] + "transcript.speakers.json"
         super().do_GET()
 
     def do_POST(self):

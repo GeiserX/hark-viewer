@@ -31,6 +31,10 @@ Done when `curl -s --noproxy '*' http://127.0.0.1:8474/api/status` reports `"act
 
 Read `~/Recordings/calls/current/transcript.json` first, every time. Take the last lines for "what are they saying now" and the whole file for "what did we decide". Answer from the transcript and quote the line you relied on.
 
+When `transcript.speakers.json` sits in the same folder, read that one instead. Same lines and same text, with the speakers fixed by the offline pass under "After the call".
+
+On a hark set to stream, `/api/status` also carries the line still being spoken, as `session.partial`. That text is unfinished, so use it for "what are they saying right now" and never for a decision.
+
 `You` is the user's microphone. `Speaker N` are voices on the computer side, numbered live, so two similar voices can share a number, and a name exists only once the user gives one ("Speaker 2 is Alex"). `start` is seconds into the call; add it to `started` in `meta.json` for the clock time.
 
 The live text comes from Parakeet v3, multilingual, language detected per utterance. Treat an odd word as a mishearing and say so rather than building on it.
@@ -41,7 +45,16 @@ The user presses Stop on the page, or run `hark-viewer stop`. Done when `/api/st
 
 ## After the call
 
-`audio.opus` costs about 23 MB per hour. The live transcript is the fast pass. The accurate one, with proper speaker separation, comes from running `audio.opus` through the user's transcription app afterwards; macOS types it as `org.xiph.ogg-audio`, which MacWhisper accepts. Delete a recording only when the user says so.
+`audio.opus` costs about 23 MB per hour. The live transcript is the fast pass, and its speaker numbers are guessed as the audio arrives, so a long call reuses a number for two people. Fix them with the offline pass:
+
+```sh
+<this skill's directory>/hark-viewer relabel            # the call in `current`
+<this skill's directory>/hark-viewer relabel --dry-run  # counts only, writes nothing
+```
+
+It writes `transcript.speakers.json` next to the live file and leaves `transcript.json` alone, so read the new file from then on. It prints how many lines matched a span and exits 3 when too few did. Lines it cannot place keep their live label.
+
+For a better transcript than hark's, `audio.opus` goes through the user's transcription app; macOS types it as `org.xiph.ogg-audio`, which MacWhisper accepts. Delete a recording only when the user says so.
 
 ## Traps
 
@@ -50,4 +63,5 @@ The user presses Stop on the page, or run `hark-viewer stop`. Done when `/api/st
 - **The agent never overwrites.** Every call gets a fresh folder; keep it that way.
 - **`session.state: "failed"`** in `/api/status` carries the reason in `session.error`. The page shows it too.
 - **The shell may export an HTTP proxy.** Talk to `127.0.0.1` with `curl --noproxy '*'`.
+- **`hark -i audio.opus` on hark 0.4.3 reads only channel 0, the user's microphone**, so the call side disappears and the transcript looks like a call nobody else spoke on. Split the channel first (`ffmpeg -i audio.opus -af "pan=mono|c0=c1" call.wav`), which is what `hark-viewer relabel` does.
 - **Consent:** recording a call needs the other side's agreement. Remind the user once when a call has outside participants.

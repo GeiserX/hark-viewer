@@ -8,7 +8,8 @@ the server. It reads the recording and writes three new files into the call fold
                            JSON Lines like transcript.json: {"start","end","speaker","text"}
                            with the speakers `Microphone` and `Others`
     transcript.mw.txt      MacWhisper's pass over the same audio, to compare against
-    postprocess.json       the state of each step, so another tool can wait on it
+    postprocess.json       the state of each step, so another tool can wait on it, and which
+                           languages the call was in (steps.languages)
 
 It never touches the audio or the live transcript. `postprocess.json` is created
 exclusively, so a second run for the same call exits 0 and does nothing; `--force`
@@ -41,6 +42,19 @@ MIN_PIECE = float(os.environ.get("HARK_VIEWER_MIN_PIECE", "20"))   # a piece thi
 SETTLE = float(os.environ.get("HARK_VIEWER_SETTLE", "5"))            # a recording this long unchanged is finished
 SETTLE_CAP = float(os.environ.get("HARK_VIEWER_SETTLE_CAP", "120"))  # and past this the job goes on regardless
 TMP_PREFIX = "hark-viewer-job-"
+# Apple's on-device language recognizer is reached through the one interpreter that ships with the
+# PyObjC bridge. A mise or Homebrew python has no bridge, so the helper always runs under this one.
+PY3 = os.environ.get("HARK_VIEWER_PY3", "/usr/bin/python3")
+LANG_MIN_CHARS = int(os.environ.get("HARK_VIEWER_LANG_MIN_CHARS", "25"))  # a shorter line says too little to judge
+LANG_MIN_CONFIDENCE = 0.70   # under this the line stays undecided and counts towards nothing
+# A line only counts as another language well above that. Measured on an all-English call, the
+# recognizer called one line Portuguese at 0.929 while real English lines went as low as 0.829, so
+# confidence alone cannot separate them. Spanish speech, even the garbled live transcription of it,
+# came back at 0.996.
+LANG_OTHER_CONFIDENCE = 0.95
+LANG_OTHER_LINES = 2         # and one stray line is noise: a language is in the call when it holds over this many
+LANG_OTHER_SHARE = 0.10      # or takes this much of a call too short for two lines to mean anything
+LANG_MAX_OTHER = 60          # lines of another language listed one by one
 MAX_FAILURES = 25   # per part. A hark that refuses everything (a missing flag, a missing model) must not be bisected for an hour.
 
 
@@ -278,6 +292,127 @@ def step_final(folder, tmp, log):
     return skipped
 
 
+# ---- which languages the call was in ----
+
+# Runs under PY3, not this interpreter. Reads a JSON list of texts, writes a JSON list of [language, confidence].
+RECOGNIZE = r"""
+import json, sys, objc
+objc.loadBundle("NaturalLanguage", globals(),
+                bundle_path="/System/Library/Frameworks/NaturalLanguage.framework")
+recognizer = NLLanguageRecognizer.alloc().init()
+out = []
+for text in json.load(sys.stdin):
+    recognizer.reset()
+    recognizer.processString_(text)
+    best = recognizer.languageHypothesesWithMaximum_(1) or {}
+    code, confidence = max(best.items(), key=lambda kv: kv[1]) if best else (None, 0.0)
+    out.append([code, round(float(confidence), 4)])
+json.dump(out, sys.stdout)
+"""
+
+
+def recognize(texts):
+    """[(language, confidence)] per text. Raises RuntimeError when the recognizer cannot run at all."""
+    if not texts:
+        return []
+    try:
+        run = subprocess.run([PY3, "-c", RECOGNIZE], input=json.dumps(texts), capture_output=True, text=True)
+    except OSError as e:
+        raise RuntimeError(f"{PY3}: {e}")
+    if run.returncode != 0:
+        raise RuntimeError(f"the language recognizer exited {run.returncode}: {(run.stderr or run.stdout).strip()[-300:]}")
+    try:
+        got = json.loads(run.stdout)
+    except ValueError as e:
+        raise RuntimeError(f"the language recognizer wrote nothing readable: {e}")
+    if not isinstance(got, list) or len(got) != len(texts):
+        raise RuntimeError(f"the language recognizer answered for {len(got) if isinstance(got, list) else 0} of {len(texts)} lines")
+    out = []
+    for entry in got:
+        code = entry[0] if isinstance(entry, list) and entry and isinstance(entry[0], str) else None
+        try:
+            confidence = float(entry[1])
+        except (IndexError, TypeError, ValueError):
+            confidence = 0.0
+        out.append((code, confidence))
+    return out
+
+
+def language_lines(folder):
+    """(lines, which file they came from). The accurate transcript when it exists, else the live one."""
+    if (folder / FINAL).is_file():
+        return read_lines(folder / FINAL), FINAL
+    return merged_lines(folder), "transcript.json"
+
+
+def language_verdict(lines):
+    """Which languages these lines are in. A line too short or too uncertain to call is left undecided."""
+    judged = [e for e in lines if len(e.get("text", "").strip()) >= LANG_MIN_CHARS]
+    votes = recognize([e["text"] for e in judged])
+    counted = {}
+    for code, confidence in votes:
+        if code and confidence >= LANG_MIN_CONFIDENCE:
+            counted[code] = counted.get(code, 0) + 1
+    total = sum(counted.values())
+    dominant = max(counted, key=lambda code: (counted[code], code)) if counted else None
+    other, runs = [], {}
+    if dominant:
+        for entry, (code, confidence) in zip(judged, votes):
+            if code and code != dominant and confidence >= LANG_OTHER_CONFIDENCE:
+                other.append({"start": entry.get("start"), "end": entry.get("end"),
+                              "language": code, "confidence": round(confidence, 3)})
+                runs[code] = runs.get(code, 0) + 1
+    # What the call was actually spoken in: the dominant language, plus any other that holds over
+    # more than one line. A single line is where the recognizer is wrong, not where a language starts.
+    present = ([dominant] if dominant else []) + sorted(
+        code for code, n in runs.items() if n >= LANG_OTHER_LINES or (total and n / total >= LANG_OTHER_SHARE))
+    return {"engine": "NLLanguageRecognizer", "lines": len(lines), "judged": total, "dominant": dominant,
+            "shares": {code: round(n / total, 3) for code, n in sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))}
+            if total else {},
+            "present": present, "mixed": len(present) > 1,
+            "other_lines": len(other), "other": other[:LANG_MAX_OTHER]}
+
+
+def say_verdict(verdict):
+    """The verdict as one line, for the log and for a person."""
+    if not verdict["dominant"]:
+        return f"no line of the {verdict['lines']} was long enough to tell"
+    # Only the languages the call is judged to be in. The full per-line tally stays in `shares`,
+    # where a single misread line cannot be mistaken for a language the call was spoken in.
+    if verdict["mixed"]:
+        head = ", ".join(f"{code} {verdict['shares'].get(code, 0):.0%}" for code in verdict["present"])
+        head += f" over {verdict['judged']} lines"
+    else:
+        head = f"{verdict['dominant']} over {verdict['judged']} lines"
+    if not verdict["other_lines"]:
+        return head
+    first = min((e["start"] for e in verdict["other"] if isinstance(e.get("start"), (int, float))), default=None)
+    where = f", first at {first:.0f} s" if first is not None else ""
+    n = verdict["other_lines"]
+    lines = "line" if n == 1 else "lines"
+    if not verdict["mixed"]:
+        return f"{head}; {n} stray {lines} read as something else, too few to call the call mixed"
+    spoken = " and ".join(verdict["present"])
+    return f"{head}; spoken in {spoken}, {n} {lines} not in {verdict['dominant']}{where}"
+
+
+def step_languages(folder, tmp, log):
+    lines, source = language_lines(folder)
+    if not lines:
+        raise RuntimeError("no transcript lines to read")
+    verdict = language_verdict(lines)
+    verdict["source"] = source
+    log(f"languages: {say_verdict(verdict)} (from {source})")
+    return {"skipped_spans": [], "languages": verdict}
+
+
+def languages_skip():
+    """Why the language step does not run, or None when it does."""
+    if not os.access(PY3, os.X_OK):
+        return f"no interpreter at {PY3}, and it is the one that carries the language recognizer (HARK_VIEWER_PY3)"
+    return None
+
+
 def step_mw(folder, tmp, log):
     meta = read_meta(folder)
     parts = parts_of(folder, meta)
@@ -321,6 +456,7 @@ def main():
                     help="call folder: absolute, workspace/name under HARK_VIEWER_ROOT, or current")
     ap.add_argument("--force", action="store_true", help="run again even when postprocess.json exists")
     ap.add_argument("--settle-only", action="store_true", help="wait until hark has finished writing the audio, do nothing else")
+    ap.add_argument("--languages-only", action="store_true", help="say which languages the call was in and do nothing else")
     args = ap.parse_args()
 
     folder = Path(args.call).expanduser()
@@ -331,6 +467,21 @@ def main():
     if args.settle_only:
         settle(audios)
         return
+    if args.languages_only:
+        why = languages_skip()
+        if why:
+            sys.exit(f"languages: {why}")
+        lines, source = language_lines(folder)
+        if not lines:
+            sys.exit(f"languages: no transcript lines in {folder}")
+        try:
+            verdict = language_verdict(lines)
+        except RuntimeError as e:
+            sys.exit(f"languages: {e}")
+        verdict["source"] = source
+        print(say_verdict(verdict) + f" (from {source})")
+        print(json.dumps(verdict, indent=1, ensure_ascii=False))
+        return
 
     status_path = folder / STATUS
     if args.force:
@@ -338,7 +489,8 @@ def main():
         if old and old.get("state") == "running":
             sys.exit(f"finalize: already running for this call (pid {old.get('pid')})")
         status_path.unlink(missing_ok=True)
-    steps = [("final", step_final, None), ("mw", step_mw, mw_skip())]
+    steps = [("final", step_final, None), ("languages", step_languages, languages_skip()),
+             ("mw", step_mw, mw_skip())]
     status = {"state": "running", "pid": os.getpid(), "started": time.time(), "finished": None, "settled": None,
               "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None, "skipped_spans": []}
                         for name, _, _ in steps}}
@@ -384,7 +536,12 @@ def main():
                 step.update(state="running", started=time.time())
                 save()
                 try:
-                    step["skipped_spans"] = run(folder, tmp, log)
+                    got = run(folder, tmp, log)
+                    if isinstance(got, dict):                 # a step with a result of its own, not just spans
+                        step["skipped_spans"] = got.pop("skipped_spans", [])
+                        step.update(got)
+                    else:
+                        step["skipped_spans"] = got
                     step["state"] = "done"
                 except Exception as e:                # noqa: BLE001 - the status file is the only place anyone looks
                     step.update(state="failed", error=str(e))

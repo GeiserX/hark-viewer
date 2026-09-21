@@ -6,6 +6,7 @@
 # hark-viewer quit                           stop the call, the page server and the hark agent
 # hark-viewer relabel [call] [options]       fix the speaker labels of a finished call
 # hark-viewer finalize [call] [--force]      write the accurate transcript by hand (a stopped call gets it on its own)
+# hark-viewer languages [call]               say which languages a call was in, and write nothing
 #
 # Settings come from the environment or ~/.config/hark-viewer.env:
 #   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER, HARK_VIEWER_MW
@@ -57,6 +58,7 @@ case "${1:-}" in
     for i in {1..40}; do pgrep -f "hark --remote-control" >/dev/null || break; sleep 0.25; done ;;
   relabel) shift; exec python3 "$here/relabel_speakers.py" "$@" ;;
   finalize) shift; exec python3 "$here/postprocess.py" "$@" ;;
+  languages) shift; exec python3 "$here/postprocess.py" "${1:-current}" --languages-only ;;
   *)
     serve
     workspace="${1:-calls}"; shift || true

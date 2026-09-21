@@ -80,6 +80,14 @@ class Merge(unittest.TestCase):
         self.assertEqual([e["text"] for e in postprocess.merged_lines(folder)], ["whole"])
 
 
+EN = ["Good evening everyone, the repository migration finished today and the pull request is ready for review.",
+      "I also updated the setup guide, and the automatic merge is now enabled for the template.",
+      "We will look at the remaining details of the project tomorrow with the whole team.",
+      "The token service is the last one left, and its infrastructure lives in the application repository."]
+ES = ["Hola a todos, hoy terminamos la migración del repositorio y la solicitud está lista para revisión.",
+      "También actualicé la guía de configuración y la fusión automática ya está activada."]
+
+
 class Job(unittest.TestCase):
     """postprocess.py as the server runs it: a process of its own, against fake hark and mw."""
 
@@ -110,7 +118,8 @@ class Job(unittest.TestCase):
         self.assertIn("--speaker-mode source --speaker-labels Microphone,Others", self.calls("hark")[0])
         status = json.loads((folder / "postprocess.json").read_text())
         self.assertEqual(status["state"], "done")
-        self.assertEqual({k: v["state"] for k, v in status["steps"].items()}, {"final": "done", "mw": "done"})
+        self.assertEqual({k: v["state"] for k, v in status["steps"].items()},
+                         {"final": "done", "languages": "done", "mw": "done"})
         self.assertEqual(status["steps"]["final"]["skipped_spans"], [])
         self.assertIsNotNone(status["steps"]["mw"]["finished"])
         self.assertEqual(len(self.calls("mw")), 3)                       # part 1 failed once, then both worked
@@ -118,6 +127,26 @@ class Job(unittest.TestCase):
         self.assertIn("words from audio.opus", text)
         self.assertIn("== part 2, starts 1200 s into the call ==\nSpeaker 1: words from audio.part2.opus", text)
         self.assertEqual(digest(folder), before)                         # audio and the live transcript untouched
+
+    def test_a_python_without_the_recognizer_fails_only_the_language_step(self):
+        folder = make_call(self.tmp, [(0, [])])
+        run = self.run_job(folder, HARK_VIEWER_PY3=sys.executable,    # this interpreter has no PyObjC bridge
+                           FAKE_HARK_TEXT=EN[0])                      # a line long enough to be worth judging
+        self.assertEqual(run.returncode, 0, run.stderr)              # the accurate transcript is the point, not this
+        status = json.loads((folder / "postprocess.json").read_text())
+        self.assertEqual(status["state"], "done")
+        self.assertEqual(status["steps"]["languages"]["state"], "failed")
+        self.assertIn("objc", status["steps"]["languages"]["error"])
+        self.assertEqual(status["steps"]["final"]["state"], "done")
+        self.assertEqual(status["steps"]["mw"]["state"], "done")
+
+    def test_no_interpreter_for_the_recognizer_skips_the_language_step(self):
+        folder = make_call(self.tmp, [(0, [])])
+        run = self.run_job(folder, HARK_VIEWER_PY3=str(self.tmp / "no-such-python"), FAKE_HARK_TEXT=EN[0])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        step = json.loads((folder / "postprocess.json").read_text())["steps"]["languages"]
+        self.assertEqual(step["state"], "skipped")
+        self.assertIn("no interpreter at", step["error"])
 
     def test_a_second_run_does_nothing_and_force_runs_again(self):
         folder = make_call(self.tmp, [(0, [])])
@@ -266,6 +295,77 @@ class Job(unittest.TestCase):
         self.assertEqual(seen, {True})
         self.assertEqual(len(self.calls("hark")), 1)
         self.assertEqual([p.name for p in folder.glob("postprocess.json.*")], [])
+
+
+def can_recognize():
+    if postprocess.languages_skip():
+        return False
+    try:
+        return bool(postprocess.recognize([EN[0]])[0][0])
+    except RuntimeError:
+        return False
+
+
+@unittest.skipUnless(can_recognize(), "needs the system python and Apple's language recognizer")
+class Languages(unittest.TestCase):
+    """Which languages a call was in, judged by Apple's on-device recognizer over the real text."""
+
+    def verdict(self, texts):
+        return postprocess.language_verdict([line(float(n), n + 1.0, "Others", t) for n, t in enumerate(texts)])
+
+    def test_a_call_in_one_language_is_not_mixed(self):
+        got = self.verdict(EN)
+        self.assertEqual(got["dominant"], "en")
+        self.assertEqual(got["present"], ["en"])
+        self.assertFalse(got["mixed"])
+        self.assertEqual(got["other"], [])
+        self.assertEqual(got["judged"], len(EN))
+
+    def test_a_call_with_both_languages_is_mixed_and_says_where(self):
+        got = self.verdict(EN + ES)
+        self.assertEqual(got["dominant"], "en")
+        self.assertEqual(sorted(got["present"]), ["en", "es"])
+        self.assertTrue(got["mixed"])
+        self.assertEqual([e["language"] for e in got["other"]], ["es", "es"])
+        self.assertEqual(got["other"][0]["start"], float(len(EN)))      # the first Spanish line, at its own time
+        self.assertIn("es", postprocess.say_verdict(got))
+
+    def test_one_stray_line_does_not_make_a_long_call_mixed(self):
+        got = self.verdict(EN * 8 + ES[:1])
+        self.assertEqual(got["present"], ["en"])
+        self.assertFalse(got["mixed"])
+        self.assertEqual(got["other_lines"], 1)                        # still reported, just not enough to call it
+        self.assertIn("stray line", postprocess.say_verdict(got))
+
+    def test_a_line_too_short_to_judge_is_left_out(self):
+        got = self.verdict(["Mm-hmm.", "Cool.", "All right."] + EN)
+        self.assertEqual(got["lines"], len(EN) + 3)
+        self.assertEqual(got["judged"], len(EN))
+
+    def test_a_call_with_nothing_long_enough_to_judge_says_so(self):
+        got = self.verdict(["Mm-hmm.", "Cool."])
+        self.assertIsNone(got["dominant"])
+        self.assertEqual(got["present"], [])
+        self.assertFalse(got["mixed"])
+        self.assertIn("long enough", postprocess.say_verdict(got))
+
+
+class LanguageSource(unittest.TestCase):
+    """The accurate transcript is read when it is there, the live one when it is not."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_the_live_transcript_is_read_until_the_accurate_one_exists(self):
+        folder = make_call(self.tmp, [(0, [line(1.0, 2.0, "Speaker 1", "the live text of this call")])])
+        lines, source = postprocess.language_lines(folder)
+        self.assertEqual(source, "transcript.json")
+        self.assertEqual([e["text"] for e in lines], ["the live text of this call"])
+        (folder / "transcript.final.json").write_text(postprocess.jsonl([line(1.0, 2.0, "Others", "the accurate text")]))
+        lines, source = postprocess.language_lines(folder)
+        self.assertEqual(source, "transcript.final.json")
+        self.assertEqual([e["text"] for e in lines], ["the accurate text"])
 
 
 def free_port():

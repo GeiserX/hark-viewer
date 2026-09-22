@@ -34,6 +34,7 @@ HARK_BIN = os.environ.get("HARK_BIN", "hark")
 # MacWhisper's pass is a comparison lane. HARK_VIEWER_MW=off turns it off, a path names another mw.
 MW_BIN = os.environ.get("HARK_VIEWER_MW", "/Applications/MacWhisper.app/Contents/MacOS/mw")
 AUDIO = "audio.opus"                 # part 1 of every call; server.py and relabel_speakers.py read it from here
+LABELS = ("Microphone", "Others")    # the two sides of the recording, as the accurate pass names them
 STATUS = "postprocess.json"
 FINAL = "transcript.final.json"
 MW_OUT = "transcript.mw.txt"
@@ -230,7 +231,7 @@ def run_hark(audio, tmp):
     out = Path(tmp) / f"{uuid.uuid4().hex}.json"
     try:
         run = subprocess.run([HARK_BIN, "-i", str(audio), "--speakers", "--speaker-mode", "source",
-                              "--speaker-labels", "Microphone,Others", "-t", str(out)],
+                              "--speaker-labels", ",".join(LABELS), "-t", str(out)],
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TOOL_TIMEOUT)
     except subprocess.TimeoutExpired:
         return None, f"hark ran {TOOL_TIMEOUT:.0f} s without finishing and was killed"
@@ -306,7 +307,14 @@ def step_final(folder, tmp, log):
                     for g in gaps]
     lines.sort(key=lambda e: e["start"])
     write_atomic(folder / FINAL, jsonl(lines))
-    return skipped
+    # A hark whose --speaker-mode source does not read a file's two channels hears the microphone
+    # and nothing else, and says so by labelling every line with it. The lines are real, they are
+    # just half the call, so this is a warning on a step that succeeded rather than a failure.
+    warning = None
+    if lines and all(e.get("speaker") == LABELS[0] for e in lines):
+        warning = f"every line is {LABELS[0]}; is HARK_BIN a build with --speaker-mode source?"
+        log(f"final: {warning}")
+    return {"skipped_spans": skipped, "warning": warning}
 
 
 # ---- which languages the call was in ----
@@ -522,7 +530,8 @@ def main():
     steps = [("final", step_final, None), ("languages", step_languages, languages_skip()),
              ("mw", step_mw, mw_skip())]
     status = {"state": "running", "pid": os.getpid(), "started": time.time(), "finished": None, "settled": None,
-              "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None, "skipped_spans": []}
+              "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None,
+                               "skipped_spans": [], "warning": None}
                         for name, _, _ in steps}}
     # The one-run-per-call lock. Linked into place whole, so nobody ever reads it empty, not even after a kill.
     first = status_path.with_name(f"{STATUS}.{os.getpid()}.tmp")

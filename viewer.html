@@ -243,7 +243,8 @@ function finalNote() {            // the accurate transcript the server writes o
   if (p.state === 'failed' || f.state === 'failed') return '  ·  final transcript: failed';
   if (f.state !== 'done') return '  ·  final transcript: running';
   const gaps = (f.skipped_spans || []).length;
-  return '  ·  final transcript: ready' + (gaps ? ' (' + gaps + (gaps === 1 ? ' span' : ' spans') + ' skipped)' : '');
+  return '  ·  final transcript: ready' + (gaps ? ' (' + gaps + (gaps === 1 ? ' span' : ' spans') + ' skipped)' : '')
+    + (f.warning ? '  ·  ' + f.warning : '');
 }
 
 function paint() {

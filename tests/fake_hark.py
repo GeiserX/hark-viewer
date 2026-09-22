@@ -6,7 +6,8 @@ poison  refuses the whole recording and any piece covering second FAKE_HARK_POIS
         with the message the real one gave. A piece is named <stem>_<start>_<length>.wav.
 fail    refuses everything
 
-FAKE_HARK_TEXT replaces the transcribed text, for a test that needs a real sentence.
+FAKE_HARK_TEXT replaces the transcribed text, for a test that needs a real sentence, and
+FAKE_HARK_SPEAKER the label, for a hark that hears only one side of the recording.
 """
 import json
 import os
@@ -34,4 +35,5 @@ if refuse:
 if out.exists():
     sys.exit(f"{out} exists")            # the real one never overwrites
 text = os.environ.get("FAKE_HARK_TEXT", audio.name)
-out.write_text(json.dumps([{"text": text, "speaker": "Others", "start": 1.0, "end": 2.0}]))
+speaker = os.environ.get("FAKE_HARK_SPEAKER", "Others")
+out.write_text(json.dumps([{"text": text, "speaker": speaker, "start": 1.0, "end": 2.0}]))

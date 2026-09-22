@@ -129,6 +129,24 @@ class Job(unittest.TestCase):
         self.assertIn("== part 2, starts 1200 s into the call ==\nSpeaker 1: words from audio.part2.opus", text)
         self.assertEqual(digest(folder), before)                         # audio and the live transcript untouched
 
+    def test_an_accurate_pass_that_heard_only_the_microphone_warns_and_still_succeeds(self):
+        """On stock hark 0.4.3 the offline pass reads channel 0 and loses the call side, and it
+        failed silently: every line came back as the microphone and the step read `done`."""
+        folder = make_call(self.tmp, [(0, [])])
+        run = self.run_job(folder, FAKE_HARK_SPEAKER="Microphone", HARK_VIEWER_MW="off")
+        self.assertEqual(run.returncode, 0, run.stderr)      # the lines are real, they are just half the call
+        step = json.loads((folder / "postprocess.json").read_text())["steps"]["final"]
+        self.assertEqual(step["state"], "done")
+        self.assertIn("every line is Microphone", step["warning"])
+        self.assertIn("--speaker-mode source", step["warning"])
+
+    def test_a_pass_that_heard_the_call_side_carries_no_warning(self):
+        folder = make_call(self.tmp, [(0, [])])
+        self.assertEqual(self.run_job(folder, HARK_VIEWER_MW="off").returncode, 0)
+        step = json.loads((folder / "postprocess.json").read_text())["steps"]["final"]
+        self.assertEqual(step["state"], "done")
+        self.assertIsNone(step["warning"])
+
     def test_a_python_without_the_recognizer_fails_only_the_language_step(self):
         folder = make_call(self.tmp, [(0, [])])
         # Not this interpreter: whether it carries the bridge decides the test, and

@@ -8,8 +8,10 @@
 # hark-viewer finalize [call] [--force]      write the accurate transcript by hand (a stopped call gets it on its own)
 # hark-viewer languages [call]               say which languages a call was in, and write nothing
 #
-# Settings come from the environment or ~/.config/hark-viewer.env:
-#   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER, HARK_VIEWER_MW
+# Settings come from the environment or from ~/.config/hark-viewer.env, whose every setting is
+# exported, so one the page server or the offline job reads reaches it too. HARK_BIN,
+# HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER (off opens nothing), HARK_VIEWER_MW and
+# the rest are in the README. A server already running keeps what it started with: quit first.
 set -euo pipefail
 
 here="${0:A:h}"

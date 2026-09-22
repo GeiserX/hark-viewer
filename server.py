@@ -56,7 +56,7 @@ START = {"system": True, "mix": True, "speakers": True, "captureBackend": "corea
          # apart: `hark -i audio.opus --speakers --speaker-mode source` gives You and Others.
          # A hark without --tracks ignores the key and records a mixed file.
          "tracks": "stereo",
-         # Stream the line being spoken (about 2.5 s behind) instead of waiting for a
+         # Stream the line being spoken (about 2 s behind) instead of waiting for a
          # pause; the page shows it as the grey row. A hark without it ignores the key.
          "liveStreaming": True}
 AUDIO = postprocess.AUDIO

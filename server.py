@@ -192,15 +192,20 @@ def status():
                   "postprocess": postprocess.read_status(ROOT / call) if call else None}
 
 
+WEDGED = f"the capture is wedged and the hark agent ({HARK_BIN}) did not come back"
+
+
 def relaunch_agent():
-    """Kill whatever listens on hark's port and start a fresh agent. The only way out of a wedged capture."""
+    """Kill whatever listens on hark's port and start a fresh agent, the only way out of a wedged
+    capture. Returns None once an agent answers, else why one does not."""
     global agent
     try:
         run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"],
                              capture_output=True, text=True, timeout=PROBE_WAIT)
     except subprocess.TimeoutExpired:
         print(f"relaunch: lsof did not answer in {PROBE_WAIT} s, leaving hark's port alone", file=sys.stderr, flush=True)
-        return ensure_agent()
+        return None if ensure_agent() else WEDGED
+    foreign, killed = [], []
     for pid in run.stdout.split():
         # Only hark's agent. Something else may listen on the same port of another address, an ssh -L or a VM forward.
         try:
@@ -210,24 +215,32 @@ def relaunch_agent():
             command = ""                                    # unnamed, so not provably hark's agent: left alone below
         if "--remote-control" not in command:
             print(f"relaunch: left pid {pid} alone, it is not a hark agent: {command}", file=sys.stderr, flush=True)
+            foreign.append(f"pid {pid} ({command or 'unnamed'})")
             continue
         try:
             os.kill(int(pid), 15)                           # SIGTERM lets hark finalise the audio file
+            killed.append(pid)
         except (OSError, ValueError):
             pass
+    if foreign and not killed:
+        # Nothing here can free the port, and a hark started against a port it cannot bind waits
+        # out AGENT_WAIT and dies: the caller then reported a wedged capture and an agent that did
+        # not come back, while the real reason was sitting on the port, and every attempt leaked
+        # one doomed process and more lines into the agent log.
+        why = hark("GET", "/status")[1].get("error") or f"something that is not hark holds port {HARK_PORT}"
+        return f"{why}. It is {', '.join(foreign)}, and no hark agent can have that port until it goes"
     # An agent that outlives the kill still holds the port, so nothing fresh can bind it. Falling
     # out of this wait used to leave ensure_agent facing that same agent, answering: it returned
     # True without starting anything and the next /start went back to the wedged capture.
     end = time.time() + DIE_WAIT
     while hark("GET", "/status")[0] == 200:
         if time.time() > end:
-            print(f"relaunch: whatever listens on hark's port {HARK_PORT} still answers after {DIE_WAIT} s, "
-                  "so no fresh agent can have it", file=sys.stderr, flush=True)
-            return False
+            return (f"whatever listens on hark's port {HARK_PORT} still answers {DIE_WAIT} s after it was "
+                    "asked to stop, so no fresh agent can have it")
         time.sleep(0.2)
     with starting:
         agent = None                                        # a fresh one is the whole point, even if ours is slow to die
-    return ensure_agent()
+    return None if ensure_agent() else WEDGED
 
 
 def ask_start(body):
@@ -265,8 +278,9 @@ def start_recording(audio, transcript):
         if time.time() >= end:
             break
         time.sleep(0.5)
-    if not relaunch_agent():
-        return 502, {"error": f"the capture is wedged and the hark agent ({HARK_BIN}) did not come back"}
+    problem = relaunch_agent()
+    if problem:
+        return 502, {"error": problem}
     return ask_start(body)
 
 

@@ -614,6 +614,50 @@ class HarkClient(unittest.TestCase):
         self.assertIn("not an object", body["error"])
 
 
+class Relaunch(unittest.TestCase):
+    """relaunch_agent leaves a listener that is not hark alone, which is right, and then used to
+    start a hark against that port anyway. It could not bind, waited out the agent wait and died,
+    and the caller reported a wedged capture and an agent that did not come back, while the reason
+    was sitting on the port. Every attempt leaked one doomed process."""
+
+    def foreign_listener(self):
+        """Something on hark's port that answers, and is not hark. The shape of an ssh -L."""
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+        self.addCleanup(sock.close)
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = sock.accept()
+                except OSError:
+                    return
+                with conn:
+                    conn.recv(4096)
+                    conn.sendall(b"SSH-2.0-OpenSSH_9.8\r\n")
+        threading.Thread(target=serve, daemon=True).start()
+        return sock.getsockname()[1]
+
+    def test_a_listener_that_is_not_hark_is_reported_and_no_hark_is_started(self):
+        tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        started = tmp / "started"
+        hark_bin = tmp / "hark.sh"
+        hark_bin.write_text(f"#!/bin/sh\necho yes >> {started}\nsleep 5\n")
+        hark_bin.chmod(0o755)
+        run = subprocess.run(
+            [sys.executable, "-c", "import server; print(server.relaunch_agent() or 'none')"],
+            cwd=str(REPO), capture_output=True, text=True, timeout=180,
+            env={**os.environ, "HARK_REMOTE_CONTROL_PORT": str(self.foreign_listener()),
+                 "HARK_VIEWER_ROOT": str(tmp), "HARK_BIN": str(hark_bin), "HARK_VIEWER_AGENT_WAIT": "3"})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("is not hark", run.stdout)
+        self.assertIn("until it goes", run.stdout)
+        self.assertNotIn("did not come back", run.stdout)
+        self.assertFalse(started.exists(), "a hark was started against a port it cannot bind")
+
+
 class Patience(unittest.TestCase):
     """`patience` is the number the launcher makes its own --max-time, so it must never be smaller
     than the time the server can spend. It was an estimate, and it came to 240 against a chain

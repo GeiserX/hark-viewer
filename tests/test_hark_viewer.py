@@ -518,6 +518,26 @@ class Relabel(unittest.TestCase):
         self.assertEqual([e["speaker"] for e in postprocess.read_lines(folder / "transcript.speakers.json")], ["Ada"])
         self.assertEqual(json.loads((folder / "speakers.json").read_text())["channel"], 1)   # the call side, not the mic
 
+    def test_the_pass_over_the_whole_recording_gets_the_whole_call_deadline(self):
+        """Pulling the call channel out decodes the entire recording, so it belongs with the
+        deadline for a whole call, not with ffprobe and the other quick tools. On the quick one a
+        long call on a loaded machine died saying ffmpeg could not split the channel, where before
+        the deadlines existed it simply took longer."""
+        real_ffmpeg = shutil.which("ffmpeg")
+        self.assertTrue(real_ffmpeg, "this test needs ffmpeg")
+        folder = make_call(self.tmp, [(0, [line(1, 2, "Speaker 1", "Ada")])])
+        real_audio(self, folder, 2)
+        # An ffmpeg that takes longer than the quick deadline and less than the whole-call one.
+        slow = self.tmp / "bin"
+        slow.mkdir()
+        (slow / "ffmpeg").write_text(f'#!/bin/sh\nsleep 1.2\nexec "{real_ffmpeg}" "$@"\n')
+        (slow / "ffmpeg").chmod(0o755)
+        run = self.run_diarizer(folder, PATH=f"{slow}:{os.environ['PATH']}",
+                                HARK_VIEWER_PROBE_TIMEOUT="0.6", HARK_VIEWER_TOOL_TIMEOUT="60")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertNotIn("did not split the call channel", run.stderr)
+        self.assertEqual([e["speaker"] for e in postprocess.read_lines(folder / "transcript.speakers.json")], ["Ada"])
+
     def test_a_dry_run_writes_nothing(self):
         folder = make_call(self.tmp, [(0, [line(3, 4, "Speaker 1", "Ada")])])
         run = self.run_relabel(folder, "--spans", self.spans((2.5, 4.5, "Ada")), "--dry-run")

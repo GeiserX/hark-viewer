@@ -79,9 +79,12 @@ def split_call_channel(audio, dest):
         run = subprocess.run(
             ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio),
              "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
-            capture_output=True, text=True, timeout=postprocess.PROBE_TIMEOUT)
+            # This decodes the whole recording, so it belongs with the passes over a whole call and
+            # not with the quick tools. On the short deadline a long call on a loaded machine died
+            # saying ffmpeg could not split the channel, where before it simply took longer.
+            capture_output=True, text=True, timeout=postprocess.TOOL_TIMEOUT)
     except subprocess.TimeoutExpired:
-        die(f"ffmpeg did not split the call channel in {postprocess.PROBE_TIMEOUT:.0f} s")
+        die(f"ffmpeg did not split the call channel in {postprocess.TOOL_TIMEOUT:.0f} s")
     if run.returncode != 0 or not dest.is_file():
         die(f"ffmpeg could not split the call channel: {run.stderr.strip()}")
     return channel

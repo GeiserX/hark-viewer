@@ -147,7 +147,7 @@ hark can refuse a whole recording. It did on a 51-minute file, with `Invalid aud
 
 A step that finished but has something to tell you puts it in `warning`. There is one so far: when no line of the accurate transcript came from the call side, every line reads `Microphone`, which is what a hark that reads only channel 0 of the recording produces. The step still succeeds, because those lines are real, they are just half the call, and the page shows the warning next to the transcript's state.
 
-Every tool the job runs has a deadline, so a hark, an `mw` or an `ffmpeg` that never returns fails its step instead of leaving the job reading `running` for ever. `HARK_VIEWER_TOOL_TIMEOUT` is the one for a whole pass over a call and `HARK_VIEWER_PROBE_TIMEOUT` the one for the quick tools.
+Every tool the job runs has a deadline, so a hark, an `mw` or an `ffmpeg` that never returns fails its step instead of leaving the job reading `running` for ever. `HARK_VIEWER_TOOL_TIMEOUT` is the one for anything that reads a whole call, which includes the pass `hark-viewer relabel` makes over the recording to pull out the call channel, and `HARK_VIEWER_PROBE_TIMEOUT` the one for the quick tools: `ffprobe`, the language recognizer, and an `ffmpeg` cutting one piece.
 
 `postprocess.json` is also the lock. The job links it into place already filled in, so it runs once per call and nobody ever reads the file empty. `./hark-viewer finalize [call] --force` runs it again, and without `--force` it does a call that never got one, such as a call recorded before this existed.
 

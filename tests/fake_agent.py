@@ -97,6 +97,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[sys.argv.index("--remote-control") + 1])
-    with open(os.environ["FAKE_LOG"], "a") as log:
+    with open(os.environ["FAKE_LOG"], "a") as log:               # logged when it is started, not when it answers
         log.write(f"agent {os.getpid()} launched\n")
+    time.sleep(float(os.environ.get("FAKE_AGENT_DELAY", "0")))   # a hark slow to open its port
     ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()

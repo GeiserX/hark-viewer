@@ -817,6 +817,20 @@ class CutOffStart(ServerCase):
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
 
+class SlowAgent(ServerCase):
+    """A hark slower to open its port than the server's patience for it used to get a second Popen
+    from the next call, so two agents raced for the port and one became an orphan."""
+    EXTRA_ENV = {"FAKE_AGENT_DELAY": "3", "HARK_VIEWER_AGENT_WAIT": "0.4"}
+
+    def test_an_agent_slow_to_come_up_is_waited_for_and_never_started_twice(self):
+        code, body = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 502, body)                    # nothing answers on hark's port yet
+        self.wait_for(lambda: self.api("/api/status")[1]["agent"], "the slow agent to answer", 30)
+        made, folder = self.new()
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        self.assertEqual(len(self.launches()), 1)
+
+
 class SlowRestart(ServerCase):
     """The part has to reach meta.json before hark is asked to start it. Written afterwards, a
     crash in between left the part recording into a file no parts_of would ever list."""

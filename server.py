@@ -90,13 +90,22 @@ def hark(method, path, body=None, timeout=10):
         return 502, {"error": f"whatever answers on hark's port {HARK_PORT} is not hark: {type(e).__name__}: {e}"}
 
 
+agent = None                                                # the agent this server started, if it started one
+
+
 def ensure_agent():
+    """hark's agent, answering. Started only when nothing answers and nothing we started is alive."""
+    global agent
     if hark("GET", "/status")[0] == 200:
         return True
-    log = open(ROOT / ".hark-agent.log", "ab")
-    subprocess.Popen([HARK_BIN, "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
-                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-    for _ in range(50):
+    if agent is None or agent.poll() is not None:
+        # A hark slower than AGENT_WAIT used to get a second Popen from the next call, so two
+        # agents raced for the port and one became an orphan `quit` might or might not match.
+        with open(ROOT / ".hark-agent.log", "ab") as log:   # closed: the old open() leaked one per call
+            agent = subprocess.Popen([HARK_BIN, "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
+                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    end = time.time() + AGENT_WAIT
+    while time.time() < end:
         time.sleep(0.2)
         if hark("GET", "/status")[0] == 200:
             return True
@@ -140,6 +149,7 @@ def status():
 
 def relaunch_agent():
     """Kill whatever listens on hark's port and start a fresh agent. The only way out of a wedged capture."""
+    global agent
     try:
         run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"],
                              capture_output=True, text=True, timeout=PROBE_WAIT)
@@ -164,6 +174,7 @@ def relaunch_agent():
         if hark("GET", "/status")[0] != 200:
             break
         time.sleep(0.2)
+    agent = None                                            # a fresh one is the whole point, even if ours is slow to die
     return ensure_agent()
 
 

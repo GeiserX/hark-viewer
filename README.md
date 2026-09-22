@@ -118,7 +118,7 @@ A start is answered only once hark's capture is open, so nothing said after the 
 
 The waiting only works if the client waits too. The server adds up its own worst case for one start and reports it as `patience` in `/api/status`. `./hark-viewer` reads that number and hands it to curl as the request's own limit. One number, both sides, so a start the server is still waiting out never reaches you as a timeout.
 
-hark answers `stopped` the moment a stop is asked for. Its capture finishes writing the audio afterwards, `/status` does not show that, and until it is done `/start` answers 409 "still finishing". So a restart, and a new call, keep asking for up to 15 seconds (`HARK_VIEWER_STOP_WAIT`). hark itself gives up on a capture after 10 seconds and then refuses every start until its agent is restarted, so past the 15 the server kills the agent on hark's port, and only a process whose command line says `--remote-control`, starts a new one and asks once more. A fresh agent gets 30 seconds to answer (`HARK_VIEWER_AGENT_WAIT`), and a hark slower than that is waited for rather than started a second time.
+hark answers `stopped` the moment a stop is asked for. Its capture finishes writing the audio afterwards, `/status` does not show that, and until it is done `/start` answers 409 "still finishing". So a restart, and a new call, keep asking for up to 15 seconds (`HARK_VIEWER_STOP_WAIT`). hark itself gives up on a capture after 10 seconds and then refuses every start until its agent is restarted, so past the 15 the server kills the agent on hark's port, and only a process whose command line says `--remote-control`, starts a new one and asks once more. A fresh agent gets 30 seconds to answer (`HARK_VIEWER_AGENT_WAIT`), and a hark slower than that is waited for rather than started a second time. The old agent has 10 seconds to let go of the port (`HARK_VIEWER_DIE_WAIT`). An agent that outlives the kill still holds it, so nothing fresh can bind it, and the restart then says the agent did not come back rather than handing the wedged one back. A hark that is not installed at all leaves the page server running, because saying so is the page's job.
 
 ## The accurate transcript
 
@@ -216,6 +216,7 @@ Timing, all in seconds. The defaults are what a real call needs, and nothing her
 | `HARK_VIEWER_START_TIMEOUT` | `90` | How long to wait for hark to answer a start. hark answers only once the capture is open, and a recognizer model that is not in memory yet took 12.7 s on the first streamed call after a reboot |
 | `HARK_VIEWER_STOP_WAIT` | `15` | How long a start waits out a capture that is still finishing before the agent is relaunched |
 | `HARK_VIEWER_AGENT_WAIT` | `30` | How long a freshly started hark agent gets to answer |
+| `HARK_VIEWER_DIE_WAIT` | `10` | How long a killed agent gets to let go of hark's port. Past it the relaunch fails rather than handing the same agent back |
 | `HARK_VIEWER_ENDED_GRACE` | `60` | How long an ending other than a stop is left for a Restart before the accurate transcript is written |
 | `HARK_VIEWER_WATCH` | `2` | Between looks at hark for a call that ended |
 | `HARK_VIEWER_SETTLE` | `5` | A recording unchanged for this long is finished, so the offline passes may read it |

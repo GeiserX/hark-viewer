@@ -407,7 +407,7 @@ class ServerCase(unittest.TestCase):
         self.port, self.agent_port = free_port(), free_port()
         self.assertFalse({self.port, self.agent_port} & {8473, 8474})
         self.proc = subprocess.Popen(
-            [sys.executable, str(REPO / "server.py")], stderr=subprocess.DEVNULL,
+            [sys.executable, str(REPO / "server.py")], stderr=open(self.tmp / ".server.log", "ab"),
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_VIEWER_PORT": str(self.port),
                  "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
                  "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
@@ -638,6 +638,23 @@ class ImpatientStart(ServerCase):
         code, answer = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
         self.assertEqual(code, 502, answer)
         self.assertIn("unreachable", str(answer))
+
+
+class CutOffStart(ServerCase):
+    """hark's HTTP server cuts a handler off at its timeout and answers 500 in its place, and the
+    capture it started runs on. A cold start took 22.8 s against a 15 s ceiling and the page called
+    it a failure while hark recorded. What hark is doing counts, not what its start said."""
+    EXTRA_ENV = {"FAKE_START_ANSWER": "500"}
+
+    def test_a_start_answered_500_is_still_the_recording(self):
+        code, made = self.api("/api/new", "POST", {"workspace": "work", "title": "cut off"})
+        self.assertEqual(code, 200, made)
+        st = self.api("/api/status")[1]
+        self.assertTrue(st["active"])
+        self.assertEqual(st["call"], made["call"])
+        self.assertEqual((self.tmp / "current").resolve(), (self.tmp / made["call"]).resolve())
+        self.assertEqual(json.loads((self.tmp / made["call"] / "meta.json").read_text())["id"], "X")
+        self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
 
 class SlowWatcher(ServerCase):

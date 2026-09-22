@@ -152,6 +152,24 @@ def start_recording(audio, transcript):
     return hark("POST", "/start", body, timeout=START_TIMEOUT)
 
 
+def recording_anyway(folder, code, answer):
+    """hark's session recording into `folder`, when its start answered badly, else None.
+
+    hark's HTTP server cuts a handler off at its ceiling and answers 500 in its place, and a
+    client timeout looks the same from here; the capture is never told, so it runs on. A cold
+    start that answered at 22.8 s was called a failure this way while hark recorded. What hark
+    is doing counts, not what its start said.
+    """
+    st_code, st = hark("GET", "/status")
+    session = (st.get("session") or {}) if st_code == 200 else {}
+    if session.get("state") in LIVE and Path(session.get("audio") or "").resolve() == (folder / AUDIO).resolve():
+        print(f"new: hark answered the start with {code} {answer}, and is recording {folder.name}; carrying on",
+              file=sys.stderr, flush=True)
+        return session
+    print(f"new: start failed with {code} {answer}", file=sys.stderr, flush=True)
+    return None
+
+
 def new_call(workspace, title):
     if not ensure_agent():
         return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}
@@ -168,8 +186,14 @@ def new_call(workspace, title):
         folder.mkdir(parents=True)
         code, body = start_recording(folder / AUDIO, folder / "transcript.json")
         if code not in (200, 201):
-            folder.rmdir()
-            return code, body
+            recording = recording_anyway(folder, code, body)
+            if recording is None:
+                try:
+                    folder.rmdir()
+                except OSError:                                 # hark wrote into it: keep what it wrote
+                    pass
+                return code, body
+            body = recording
         (folder / "meta.json").write_text(json.dumps(
             {"started": time.time(), "workspace": workspace, "title": str(title).strip(), "id": body.get("id")}))
         link = ROOT / "current"

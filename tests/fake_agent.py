@@ -68,6 +68,8 @@ class H(BaseHTTPRequestHandler):
             Path(body["audio"]).write_bytes(b"audio")
             S["session"] = {"state": "recording", "elapsed": 0, "muted": False, "id": "X",
                             "audio": body["audio"], "transcript": body["transcript"]}
+            if os.environ.get("FAKE_START_ANSWER"):   # hark's HTTP server cut the handler off: a 500 for a capture that runs on
+                return self.answer(int(os.environ["FAKE_START_ANSWER"]), {})
             return self.answer(201, {"id": "X"})
         if self.path == "/stop":
             if not live:

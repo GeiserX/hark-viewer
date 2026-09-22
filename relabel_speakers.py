@@ -170,6 +170,11 @@ def main():
     if spans is None:
         if shutil.which(args.hark) is None and not Path(args.hark).is_file():
             die(f"hark not found: {args.hark} (set --hark or HARK_BIN)")
+        # hark reports `stopped` before its capture has finished writing the audio, so a relabel run
+        # straight after Stop used to diarize a file hark was still growing.
+        waited, capped = postprocess.settle([audio])
+        if waited:
+            print(f"waited {waited:.1f} s for {AUDIO} to stop changing" + (", gave up" if capped else ""))
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "call.wav"
             channel = split_call_channel(audio, wav)

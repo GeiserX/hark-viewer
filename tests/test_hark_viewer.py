@@ -56,6 +56,28 @@ def line(start, end, speaker, text):
     return {"start": start, "end": end, "speaker": speaker, "text": text}
 
 
+def real_audio(case, folder, seconds):
+    """A real stereo Opus file, for anything that runs ffprobe or ffmpeg over a recording."""
+    case.assertTrue(shutil.which("ffmpeg") and shutil.which("ffprobe"), "this test needs ffmpeg and ffprobe")
+    made = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                           "-t", str(seconds), "-c:a", "libopus", str(folder / "audio.opus")], capture_output=True, text=True)
+    case.assertEqual(made.returncode, 0, made.stderr)
+
+
+def keep_writing(case, audio, seconds):
+    """hark, still writing the audio after it said stopped."""
+    stop = time.time() + seconds
+
+    def capture():
+        while time.time() < stop:
+            with open(audio, "ab") as f:
+                f.write(b"tail")
+            time.sleep(0.05)
+    writer = threading.Thread(target=capture)
+    writer.start()
+    case.addCleanup(writer.join)
+
+
 class Merge(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
@@ -195,10 +217,7 @@ class Job(unittest.TestCase):
         self.assertEqual(self.calls("mw"), [])
 
     def real_audio(self, folder, seconds):
-        self.assertTrue(shutil.which("ffmpeg") and shutil.which("ffprobe"), "this test needs ffmpeg and ffprobe")
-        made = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                               "-t", str(seconds), "-c:a", "libopus", str(folder / "audio.opus")], capture_output=True, text=True)
-        self.assertEqual(made.returncode, 0, made.stderr)
+        real_audio(self, folder, seconds)
 
     def test_a_part_hark_refuses_is_cut_up_and_only_the_bad_piece_is_skipped(self):
         folder = make_call(self.tmp, [(0, [])])
@@ -252,17 +271,7 @@ class Job(unittest.TestCase):
         self.assertEqual(postprocess.read_status(folder)["state"], "failed")
 
     def keep_writing(self, audio, seconds):
-        """hark, still writing the audio after it said stopped."""
-        stop = time.time() + seconds
-
-        def capture():
-            while time.time() < stop:
-                with open(audio, "ab") as f:
-                    f.write(b"tail")
-                time.sleep(0.05)
-        writer = threading.Thread(target=capture)
-        writer.start()
-        self.addCleanup(writer.join)
+        keep_writing(self, audio, seconds)
 
     def test_the_job_waits_until_hark_has_finished_writing_the_audio(self):
         folder = make_call(self.tmp, [(0, [])])
@@ -450,9 +459,15 @@ class Relabel(unittest.TestCase):
         path.write_text(json.dumps([{"start": s, "end": e, "speaker": who} for s, e, who in triples]))
         return str(path)
 
-    def run_relabel(self, folder, *args):
+    def run_relabel(self, folder, *args, **env):
         return subprocess.run([sys.executable, str(REPO / "relabel_speakers.py"), str(folder), *args],
-                              capture_output=True, text=True, env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp)})
+                              capture_output=True, text=True,
+                              env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp),
+                                   "FAKE_LOG": str(self.tmp / "calls.log"), **env})
+
+    def run_diarizer(self, folder, *args, **env):
+        """relabel's own path: ffprobe, the channel split, a diarizer pass and the cache."""
+        return self.run_relabel(folder, "--hark", str(HERE / "fake_diarizer.py"), *args, **env)
 
     def test_spans_from_another_recording_are_refused_and_nothing_is_written(self):
         """The coverage gate is the only thing between spans that belong to a different recording
@@ -477,6 +492,21 @@ class Relabel(unittest.TestCase):
         self.assertEqual([e["text"] for e in postprocess.read_lines(folder / "transcript.speakers.json")],
                          ["mine", "Ada", "Bo"])
         self.assertEqual((folder / "transcript.json").read_bytes(), live)
+
+    def test_a_relabel_run_straight_after_stop_waits_for_the_audio(self):
+        """hark answers `stopped` before its capture has finished writing, so a relabel with no
+        settle diarized a file that was still growing."""
+        folder = make_call(self.tmp, [(0, [line(1, 2, "Speaker 1", "Ada")])])
+        real_audio(self, folder, 2)
+        keep_writing(self, folder / "audio.opus", 1.5)
+        run = self.run_diarizer(folder, HARK_VIEWER_SETTLE="0.5")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("for audio.opus to stop changing", run.stdout)
+        # The diarizer ran only after the writing stopped, so it read the whole recording.
+        log = (self.tmp / "calls.log").read_text()
+        self.assertIn("diarizer", log)
+        self.assertEqual([e["speaker"] for e in postprocess.read_lines(folder / "transcript.speakers.json")], ["Ada"])
+        self.assertEqual(json.loads((folder / "speakers.json").read_text())["channel"], 1)   # the call side, not the mic
 
     def test_a_dry_run_writes_nothing(self):
         folder = make_call(self.tmp, [(0, [line(3, 4, "Speaker 1", "Ada")])])

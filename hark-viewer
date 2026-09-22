@@ -65,11 +65,14 @@ case "${1:-}" in
       python3 "$here/postprocess.py" --settle-only current || true
       nohup python3 "$here/postprocess.py" current >> "$HARK_VIEWER_ROOT/.postprocess.log" 2>&1 &!
     fi
-    # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just finished.
-    pkill -TERM -f "hark --remote-control" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
+    # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just
+    # finished. Matched by the binary's own name, because HARK_BIN is usually a build of your own
+    # and a hardcoded `hark` left that agent running.
+    agent="${HARK_BIN:t} --remote-control"
+    pkill -TERM -f "$agent" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
     pkill -f "$here/server.py" 2>/dev/null || true
     # Wait for it to go: starting again while a capture is still finishing gives an empty recording.
-    for i in {1..40}; do pgrep -f "hark --remote-control" >/dev/null || break; sleep 0.25; done ;;
+    for i in {1..40}; do pgrep -f "$agent" >/dev/null || break; sleep 0.25; done ;;
   relabel) shift; exec python3 "$here/relabel_speakers.py" "$@" ;;
   finalize) shift; exec python3 "$here/postprocess.py" "$@" ;;
   languages) shift; exec python3 "$here/postprocess.py" "${1:-current}" --languages-only ;;

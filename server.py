@@ -68,16 +68,28 @@ turn = threading.Lock()
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never route loopback through a proxy
 
 
+def object_response(code, value):
+    """hark answers with a JSON object. Anything else on its port is not hark.
+
+    A listener that answers `200 []` decodes fine and then meets .get() in every caller, which is
+    an AttributeError and a 500 from the page: the same failure a non-JSON answer used to cause.
+    """
+    if isinstance(value, dict):
+        return code, value
+    return 502, {"error": f"whatever answers on hark's port {HARK_PORT} is not hark: "
+                          f"it returned a JSON {type(value).__name__}, not an object"}
+
+
 def hark(method, path, body=None, timeout=10):
     data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
     req = urllib.request.Request(HARK_URL + path, data=data, method=method)
     try:
         with opener.open(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read() or b"{}")
+            return object_response(r.status, json.loads(r.read() or b"{}"))
     except urllib.error.HTTPError as e:
         raw = e.read()
         try:
-            return e.code, json.loads(raw or b"{}")
+            return object_response(e.code, json.loads(raw or b"{}"))
         except ValueError:
             return e.code, {"error": raw.decode(errors="replace")}
     except OSError as e:

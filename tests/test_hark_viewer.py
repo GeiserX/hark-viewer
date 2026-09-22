@@ -599,6 +599,14 @@ class HarkClient(unittest.TestCase):
         self.assertEqual(code, 502)
         self.assertIn("is not hark", body["error"])
 
+    def test_a_listener_answering_json_that_is_not_an_object_is_reported(self):
+        # Valid JSON, so it decoded, and then every caller met .get() on a list: an AttributeError
+        # and a 500 from the page, which is the failure the two tests above already cover for
+        # answers that do not decode at all.
+        code, body = self.ask(self.listener(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]"))
+        self.assertEqual(code, 502)
+        self.assertIn("not an object", body["error"])
+
 
 class ServerCase(unittest.TestCase):
     """server.py on spare ports. It starts the fake agent itself, the way it starts hark."""

@@ -9,6 +9,8 @@ import http.client
 import json
 import os
 import re
+import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -112,6 +114,21 @@ def hark(method, path, body=None, timeout=HARK_CALL):
         # BadStatusLine an HTTPException, so neither was caught: this killed ensure_agent at
         # boot before the page server ever bound, and dropped every poll if it turned up mid-call.
         return 502, {"error": f"whatever answers on hark's port {HARK_PORT} is not hark: {type(e).__name__}: {e}"}
+
+
+class Serving(ThreadingHTTPServer):
+    """ThreadingHTTPServer that does not do a reverse DNS lookup while it binds.
+
+    http.server's own server_bind calls socket.getfqdn on the bind address in between bind() and
+    the listen() that server_activate does. Where a reverse lookup is slow, the port is therefore
+    bound and not listening for as long as the lookup takes, and a connect to a bound socket that
+    is not listening is not refused: it hangs until the client's own timeout, about eight seconds
+    here. So the page server, and the agent, read as present and mute instead of not yet there.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = socket.gethostname(), self.server_address[1]
 
 
 agent = None                                                # the agent this server started, if it started one
@@ -629,6 +646,6 @@ if __name__ == "__main__":
     reconcile()
     threading.Thread(target=watch, daemon=True).start()
     try:
-        ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+        Serving(("127.0.0.1", PORT), Handler).serve_forever()
     except OSError as e:
         sys.exit(f"hark-viewer: cannot listen on 127.0.0.1:{PORT}: {e}")

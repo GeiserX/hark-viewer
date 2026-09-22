@@ -678,6 +678,47 @@ class Relaunch(unittest.TestCase):
         self.assertFalse(started.exists(), "a hark was started against a port it cannot bind")
 
 
+class BindingWithoutAReverseLookup(unittest.TestCase):
+    """http.server's own server_bind calls socket.getfqdn on the bind address in between bind() and
+    the listen() inside server_activate. A connect to a port that is bound and not listening is not
+    refused, it hangs until the client's own timeout, so where the reverse lookup is slow both this
+    server and the agent read as present and mute for as long as it takes. On a CI runner the agent
+    was alive and silent for 31 s and every test that needed a second one failed, while all of them
+    passed on a laptop where the same lookup takes 7 ms."""
+
+    def watched_getfqdn(self):
+        asked = []
+        real = socket.getfqdn
+
+        def spy(*a):
+            asked.append(a)
+            return real(*a)
+        socket.getfqdn = spy
+        self.addCleanup(setattr, socket, "getfqdn", real)
+        return asked
+
+    def test_the_page_server_binds_without_asking_for_a_name(self):
+        asked = self.watched_getfqdn()
+        ours = server.Serving(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        self.addCleanup(ours.server_close)
+        self.assertEqual(asked, [], "the bind did a reverse DNS lookup")
+        # The control: the stock class this one replaces still does it, so the test above has
+        # something to be true about.
+        stock = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        self.addCleanup(stock.server_close)
+        self.assertEqual(asked, [("127.0.0.1",)], asked)
+
+    def test_a_port_that_is_bound_and_not_listening_hangs_rather_than_refusing(self):
+        """Why the lookup mattered at all: this is what a client sees during that gap."""
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        self.addCleanup(held.close)
+        began = time.time()
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", held.getsockname()[1]), timeout=2)
+        self.assertGreater(time.time() - began, 1.5, "it was refused, so the gap would have been harmless")
+
+
 class Patience(unittest.TestCase):
     """`patience` is the number the launcher makes its own --max-time, so it must never be smaller
     than the time the server can spend. It was an estimate, and it came to 240 against a chain
@@ -1413,7 +1454,7 @@ class Launcher(unittest.TestCase):
                 self.answer({"call": "work/2026-09-21_170000", "folder": str(case.tmp),
                              "url": f"http://127.0.0.1:{case.port}/?call=work/2026-09-21_170000"})
 
-        self.stub = ThreadingHTTPServer(("127.0.0.1", self.port), Stub)
+        self.stub = server.Serving(("127.0.0.1", self.port), Stub)   # no reverse lookup while it binds
         threading.Thread(target=self.stub.serve_forever, daemon=True).start()
         self.addCleanup(self.stub.server_close)
         self.addCleanup(self.stub.shutdown)

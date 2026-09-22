@@ -38,6 +38,16 @@ jobs:
       - name: Install ffmpeg
         run: brew install ffmpeg
 
+      # What the runner costs for the two things that made this suite fail here and pass on a
+      # laptop. The second number is the stock class, not the one the code uses, so it keeps
+      # measuring the cost the override removes.
+      - name: What a reverse lookup and a bind cost here
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          "$PY" -c 'import socket,time;t=time.time();n=socket.getfqdn("127.0.0.1");print("getfqdn(127.0.0.1) =",repr(n),"in",round(time.time()-t,3),"s")'
+          "$PY" -c 'import time;from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler;t=time.time();s=ThreadingHTTPServer(("127.0.0.1",0),BaseHTTPRequestHandler);print("stock bind and activate in",round(time.time()-t,3),"s");s.server_close()'
+
       - name: The suite
         env:
           PY: ${{ matrix.python }}

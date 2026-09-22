@@ -26,6 +26,8 @@ changes it from a test. Every request is a line in FAKE_LOG: `agent <pid> <path>
 import json
 import os
 import signal
+import socket
+import socketserver
 import sys
 import threading
 import time
@@ -52,6 +54,20 @@ def keep_writing(audio, stopped_at):
         if S["wedged"] and time.time() - stopped_at > S["stop_timeout"] and S["session"]["state"] == "stopped":
             S["session"] = {**S["session"], "state": "failed", "error": "capture did not finish"}
         time.sleep(0.1)
+
+
+class Serving(ThreadingHTTPServer):
+    """No reverse DNS lookup between bind() and listen(), the same as the page server.
+
+    http.server's server_bind calls socket.getfqdn in that gap, and a connect to a port that is
+    bound and not listening hangs until the client gives up rather than being refused. On a runner
+    with a slow reverse lookup this agent was alive and mute for half a minute, and every test that
+    needed a second one failed there and passed everywhere else.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = socket.gethostname(), self.server_address[1]
 
 
 class H(BaseHTTPRequestHandler):
@@ -111,4 +127,4 @@ if __name__ == "__main__":
     with open(os.environ["FAKE_LOG"], "a") as log:               # logged when it is started, not when it answers
         log.write(f"agent {os.getpid()} launched\n")
     time.sleep(float(os.environ.get("FAKE_AGENT_DELAY", "0")))   # a hark slow to open its port
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    Serving(("127.0.0.1", port), H).serve_forever()

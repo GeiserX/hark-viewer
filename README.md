@@ -93,6 +93,7 @@ A hark that checks its own capture reports it in `/status` as `session.callAudio
 | `silent` | the call side is quiet, and hark checked that nothing is playing | grey note, `call side quiet for 00:42` |
 | `dead` | audio is playing and the capture hears none of it; hark is restarting the capture | red banner |
 | `recovered` | the capture is back | green note with the restart count |
+| `unknown` | nothing has been measured: no non-zero sample has arrived at all, which is what a missing or stale System Audio Recording grant looks like | nothing for the first 20 seconds, then a grey note pointing at System Settings > Privacy & Security |
 
 A hark without `callAudio` leaves the page to guess. After 90 seconds of recording with no new line and no open line it shows an amber note, `no new lines for 01:35`. Amber because nobody talking before a meeting starts looks the same from the page as a dead capture. `?quiet=SECONDS` on the page URL changes the 90.
 

@@ -112,6 +112,8 @@ let call = params.get('call'), st = null, shown = 0, lastWho = null, startMs = n
 // For a hark that does not report on its capture: when this page last saw any sign of speech.
 let heardAt = Date.now(), heardKey = '';
 const QUIET_AFTER = (+params.get('quiet') || 90) * 1000;
+// How long a recording runs before hark having measured no call audio at all is worth saying.
+const MEASURED_BY = 20;
 
 const pad = n => String(n).padStart(2, '0');
 const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
@@ -227,6 +229,15 @@ function notice() {
     if (a.state === 'dead') { kind = 'dead'; text = 'CALL AUDIO LOST for ' + span(a.silentFor || 0) + '. Audio is playing and hark hears none of it. hark is restarting the capture' + (n ? ' (' + n + ' so far)' : '') + '. If this stays, press Restart.'; }
     else if (a.state === 'silent') { kind = 'quiet'; text = 'call side quiet for ' + span(a.silentFor || 0); }
     else if (a.state === 'recovered') { kind = 'fine'; text = 'call audio is back' + (n ? ' after ' + n : ''); }
+    // `unknown` is hark saying it has measured nothing at all. It stays that way for a whole
+    // recording when the tap never delivers one non-zero sample, which is what a missing or stale
+    // System Audio Recording grant looks like, and it also shows when a run of zeros was worth
+    // questioning and the throwaway tap could not be built. Only after MEASURED_BY, because the
+    // opening cycles of a real call are often silent and a warning then would cry wolf.
+    else if (a.state === 'unknown' && (s.elapsed || 0) > MEASURED_BY) {
+      kind = 'quiet';
+      text = 'no call audio heard yet: if people are talking, check System Audio Recording for hark in System Settings > Privacy & Security';
+    }
   } else if (mine() && failures < 3) {           // out of touch with the server, the status is stale and says nothing
     // Anything new counts as speech: a line, a change in the open line, leaving a pause.
     const key = [shown, s.state, s.partial && s.partial.text].join('|');

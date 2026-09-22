@@ -104,6 +104,11 @@ def hark(method, path, body=None, timeout=10):
 
 
 agent = None                                                # the agent this server started, if it started one
+# Held while the agent is being started. Both callers run ensure_agent before they take `turn`,
+# so two overlapping POSTs with the agent down each read `agent is None` and each ran Popen: the
+# two-agents-on-one-port race the single-agent guard exists to prevent, arrived at concurrently
+# instead of sequentially.
+starting = threading.Lock()
 
 
 def ensure_agent():
@@ -111,6 +116,15 @@ def ensure_agent():
     global agent
     if hark("GET", "/status")[0] == 200:
         return True
+    with starting:
+        if hark("GET", "/status")[0] == 200:
+            return True                                     # another request started it while we waited
+        return launch_agent()
+
+
+def launch_agent():
+    """Start the agent and wait for it, under `starting`."""
+    global agent
     if agent is None or agent.poll() is not None:
         # A hark slower than AGENT_WAIT used to get a second Popen from the next call, so two
         # agents raced for the port and one became an orphan `quit` might or might not match.
@@ -200,7 +214,8 @@ def relaunch_agent():
                   "so no fresh agent can have it", file=sys.stderr, flush=True)
             return False
         time.sleep(0.2)
-    agent = None                                            # a fresh one is the whole point, even if ours is slow to die
+    with starting:
+        agent = None                                        # a fresh one is the whole point, even if ours is slow to die
     return ensure_agent()
 
 

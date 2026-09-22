@@ -1014,6 +1014,35 @@ class DeathlessAgent(ServerCase):
         self.assertIn("still answers after", (self.tmp / ".server.log").read_text())
 
 
+class OverlappingStarts(ServerCase):
+    """Both callers run ensure_agent before they take `turn`, so two POSTs that arrive together
+    with the agent down each read `agent is None` and each started one. Two agents then raced for
+    hark's port, and whichever lost became an orphan `quit` might or might not have matched."""
+    EXTRA_ENV = {"FAKE_AGENT_DELAY": "2", "HARK_VIEWER_AGENT_WAIT": "20"}
+
+    def listening(self):
+        run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{self.agent_port}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=30)
+        return run.stdout.split()
+
+    def test_two_calls_that_arrive_together_start_one_agent(self):
+        self.wait_for(lambda: self.api("/api/status")[1]["agent"], "the agent the server started", 30)
+        self.assertEqual(len(set(self.launches())), 1)
+        self.kill_agent()
+        self.wait_for(lambda: not self.api("/api/status")[1]["agent"], "the agent to be gone")
+        answers = []
+        both = [threading.Thread(target=lambda: answers.append(
+            self.api("/api/new", "POST", {"workspace": "work", "title": ""}))) for _ in range(2)]
+        for t in both:
+            t.start()
+        for t in both:
+            t.join(90)
+        self.assertEqual(len(answers), 2, "a request never came back")
+        self.assertEqual(len(set(self.launches())), 2, self.launches())
+        self.assertEqual(len(self.listening()), 1, "two agents are holding hark's port")
+        self.assertEqual(sorted(code for code, _ in answers), [200, 409])   # one call, one refusal
+
+
 class SlowAgent(ServerCase):
     """A hark slower to open its port than the server's patience for it used to get a second Popen
     from the next call, so two agents raced for the port and one became an orphan."""

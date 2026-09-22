@@ -1150,9 +1150,11 @@ class DeathlessAgent(ServerCase):
         made, folder = self.new()
         code, body = self.api("/api/restart", "POST")
         self.assertEqual(code, 502, body)
-        self.assertIn("did not come back", body["error"])
+        # It says what is wrong, not only that something is: the port is still held by the agent
+        # that was asked to stop, so no fresh one can have it.
+        self.assertIn("still answers", body["error"])
+        self.assertIn("no fresh agent can have it", body["error"])
         self.assertEqual(len(set(self.launches())), 1)                   # no second agent was started against the live port
-        self.assertIn("still answers after", (self.tmp / ".server.log").read_text())
 
 
 class OverlappingStarts(ServerCase):

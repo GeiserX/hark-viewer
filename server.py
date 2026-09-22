@@ -24,6 +24,13 @@ import postprocess
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "calls")).expanduser()
+if not ROOT.is_absolute():
+    # A relative root is stored verbatim in the `current` symlink, where it resolves against the
+    # link's own directory and so repeats the root: `calls/current` pointing at `calls/work/x`
+    # reads as `calls/calls/work/x`. The detached job outlives this process, so it cannot rely on
+    # the working directory either. Absolute, and not resolved, so a root that is itself a symlink
+    # keeps the name the user gave it.
+    ROOT = Path.cwd() / ROOT
 PORT = int(os.environ.get("HARK_VIEWER_PORT", "8474"))
 HARK_PORT = int(os.environ.get("HARK_REMOTE_CONTROL_PORT", "8473"))
 HARK_BIN = os.environ.get("HARK_BIN", "hark")  # point this at your own build to run an unreleased hark

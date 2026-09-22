@@ -748,6 +748,51 @@ class BindingWithoutAReverseLookup(unittest.TestCase):
         self.assertGreater(time.time() - began, 1.5, "it was refused, so the gap would have been harmless")
 
 
+class RelativeRoot(unittest.TestCase):
+    """A relative HARK_VIEWER_ROOT was stored verbatim in the `current` symlink, where it resolves
+    against the link's own directory and so repeats the root: `calls/current` pointing at
+    `calls/work/x` reads as `calls/calls/work/x`, which nothing can open. status(), the boot
+    reconciliation, the offline job and relabel all read that link."""
+
+    def test_a_relative_root_still_gives_a_current_link_that_opens(self):
+        tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        port, agent_port = free_port(), free_port()
+        log = open(tmp / ".server.log", "ab")
+        self.addCleanup(log.close)
+        proc = subprocess.Popen(
+            [sys.executable, str(REPO / "server.py")], stderr=log, cwd=str(tmp),
+            env={**os.environ, "HARK_VIEWER_ROOT": "calls", "HARK_VIEWER_PORT": str(port),
+                 "HARK_REMOTE_CONTROL_PORT": str(agent_port), "HARK_BIN": str(HERE / "fake_hark.py"),
+                 "FAKE_LOG": str(tmp / "calls.log"), "HARK_VIEWER_MW": "off", "HARK_VIEWER_WATCH": "30",
+                 "HARK_VIEWER_AGENT_WAIT": "25"})
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.terminate)
+
+        def api(path, method="GET", body=None):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
+                                         data=json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None),
+                                         headers={"X-Hark-Viewer": "1"})
+            try:
+                with opener.open(req, timeout=60) as r:
+                    return r.status, json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+            except OSError:
+                return 0, {}
+        end = time.time() + 60
+        while time.time() < end and api("/api/status")[0] != 200:
+            time.sleep(0.1)
+        code, made = api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 200, made)
+        link = tmp / "calls" / "current"
+        self.assertTrue(link.is_symlink())
+        # The link has to open from anywhere, which is the whole point of it.
+        self.assertTrue((link / "meta.json").is_file(), f"{link} points at {os.readlink(link)}")
+        self.assertEqual(link.resolve(), Path(made["folder"]).resolve())
+        self.assertEqual(api("/api/status")[1]["call"], made["call"])
+
+
 class Patience(unittest.TestCase):
     """`patience` is the number the launcher makes its own --max-time, so it must never be smaller
     than the time the server can spend. It was an estimate, and it came to 240 against a chain

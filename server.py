@@ -277,7 +277,14 @@ def restart_call(force=False):
             except (OSError, AttributeError):
                 return 409, {"error": f"{call} has no start time in meta.json and no {AUDIO} to take one from", "call": call}
         if st["active"]:
-            hark("POST", "/stop")
+            # The answer used to be discarded. A stop that failed left the call recording, the
+            # /start below came back 409 "already active", and the user was told the call was
+            # stopped and the part had not started: the first half false, and an invitation to
+            # press Restart again. 404 is hark saying there was nothing to stop, which is fine.
+            stop_code, stop_body = hark("POST", "/stop")
+            if stop_code not in (200, 201, 204, 404):
+                return 502, {"error": f"the recording would not stop, so it is still running: "
+                                      f"{stop_body.get('error') or stop_body}", "call": call}
         parts = postprocess.parts_of(folder, meta)
         n = len(parts) + 1
         while (folder / f"audio.part{n}.opus").exists() or (folder / f"transcript.part{n}.json").exists():

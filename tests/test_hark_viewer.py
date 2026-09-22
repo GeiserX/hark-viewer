@@ -721,6 +721,20 @@ class Server(ServerCase):
         self.assertAlmostEqual(meta["started"], (folder / "audio.opus").stat().st_birthtime, delta=0.01)
         self.assertGreater(postprocess.offset_of(meta["parts"][1], meta), 1.0)
 
+    def test_a_restart_whose_stop_failed_says_the_recording_is_still_running(self):
+        """The stop's answer was thrown away. A stop that failed left the call recording, the
+        /start that follows came back 409 "already active", and the user was told the call was
+        stopped and the part had not started, of which the first half was false."""
+        made, folder = self.new()
+        self.fake(stop_answer=500)
+        code, body = self.api("/api/restart", "POST")
+        self.assertEqual(code, 502, body)
+        self.assertIn("would not stop", body["error"])
+        self.assertEqual(body["call"], made["call"])
+        self.assertEqual([p for p, _ in self.seen()], ["/start", "/stop"])   # no part was offered to hark
+        self.assertFalse((folder / "audio.part2.opus").exists())
+        self.assertTrue(self.api("/api/status")[1]["active"])               # and the call is still recording
+
     def test_restart_with_nothing_recording_is_refused(self):
         code, body = self.api("/api/restart", "POST")
         self.assertEqual(code, 409)

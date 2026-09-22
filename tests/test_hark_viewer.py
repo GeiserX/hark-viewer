@@ -668,6 +668,24 @@ class CutOffStart(ServerCase):
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
 
+class EndedAnyWay(ServerCase):
+    """Only a session hark called `stopped` used to get the accurate transcript. hark's own
+    `failed`, and an agent that vanished with the call still open, left it unwritten, and a server
+    restart lost it for good with nothing saying so. The grace is the room Restart needs."""
+    EXTRA_ENV = {"HARK_VIEWER_ENDED_GRACE": "0.5"}
+
+    def test_a_session_hark_reports_failed_still_gets_its_transcript(self):
+        made, folder = self.new()
+        self.fake(session={"state": "failed", "error": "captured no audio"})
+        self.wait_for(lambda: (postprocess.read_status(folder) or {}).get("state") == "done", "the transcript")
+
+    def test_an_agent_that_vanished_with_the_call_open_still_gets_its_transcript(self):
+        made, folder = self.new()
+        self.kill_agent()
+        self.wait_for(lambda: not self.api("/api/status")[1]["agent"], "the agent to be gone")
+        self.wait_for(lambda: (postprocess.read_status(folder) or {}).get("state") == "done", "the transcript")
+
+
 class NotCapturing(ServerCase):
     """hark gives up waiting for its own capture at 60 s and answers the start 2xx with
     `capturing: false`. Nothing read the field, so that start became a call folder, a `current`

@@ -42,6 +42,10 @@ AGENT_WAIT = float(os.environ.get("HARK_VIEWER_AGENT_WAIT", "30"))  # how long a
 # makes it its own --max-time, so no client ever gives up on a recording that did begin.
 PATIENCE = round(STOP_WAIT + 2 * START_TIMEOUT + AGENT_WAIT + 15)
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
+# An ending other than a stop is where Restart records on into the same call, and the accurate
+# transcript refuses a call that already has one. So those endings get the transcript only after
+# this long without the call coming back.
+ENDED_GRACE = float(os.environ.get("HARK_VIEWER_ENDED_GRACE", "60"))
 # What every call is recorded with. Opus because it stays playable while hark is
 # still writing it, so a crash costs nothing; m4a and flac hold back the header
 # until hark stops, and WAV costs 635 MB an hour.
@@ -203,7 +207,7 @@ def new_call(workspace, title):
             return 409, {"error": "a call is already being recorded", "call": st["call"]}
         if watch.call:                                      # ended inside the watcher's last tick: it still gets its transcript
             finalize(watch.call)
-            watch.call = None
+            watch.call = watch.ended = None
         workspace = slug(workspace, "calls")
         name = time.strftime("%Y-%m-%d_%H%M%S") + (f"_{slug(title)}" if slug(title) else "")
         folder = ROOT / workspace / name
@@ -225,7 +229,7 @@ def new_call(workspace, title):
             link.unlink()
         link.symlink_to(folder)
         call = f"{workspace}/{name}"
-        watch.call = call
+        watch.call, watch.ended = call, None
         return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}
 
 
@@ -267,7 +271,7 @@ def restart_call(force=False):
             return 502, {"error": f"the call is stopped and part {n} did not start: {body.get('error') or body}", "call": call}
         part["started"] = time.time()
         postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
-        watch.call = call
+        watch.call, watch.ended = call, None
         return 200, {"call": call, "folder": str(folder), "part": n, "url": f"http://127.0.0.1:{PORT}/?call={call}"}
 
 
@@ -284,22 +288,33 @@ def finalize(call):
 
 
 def watch():
-    """Notice the end of a call however it ended: the page, `hark-viewer stop`, or hark itself."""
+    """Notice the end of a call however it ended.
+
+    A stop from the page or the command line is the end at once. Every other ending - hark
+    reporting the session `failed`, hark disowning its own capture, the agent dying with the call
+    still open - is the end too, once ENDED_GRACE has passed without the call coming back, because
+    that is the window in which Restart records on into the same call.
+    """
     while True:
         time.sleep(WATCH_EVERY)
         try:
             with turn:
                 code, st = status()
                 if st["active"]:
-                    watch.call = st["call"]
-                elif watch.call and (st["session"] or {}).get("state") == "stopped" and st["call"] == watch.call:
-                    finalize(watch.call)
-                    watch.call = None
+                    watch.call, watch.ended = st["call"], None
+                elif watch.call:
+                    stopped = (st["session"] or {}).get("state") == "stopped" and st["call"] == watch.call
+                    if not stopped:
+                        watch.ended = watch.ended or time.time()
+                    if stopped or time.time() - watch.ended >= ENDED_GRACE:
+                        finalize(watch.call)
+                        watch.call = watch.ended = None
         except Exception as e:                              # noqa: BLE001 - the watcher must outlive any one bad tick
             print(f"watch: {e}", file=sys.stderr, flush=True)
 
 
 watch.call = None                                           # the call last seen recording
+watch.ended = None                                          # when it stopped looking live, for an ending that is not a stop
 
 
 def workspaces():

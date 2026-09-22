@@ -262,8 +262,10 @@ function paint() {
   $('state').textContent = label; $('meta').textContent = meta;
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
   $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
-  // Restarting is for the call on screen only: while it records, or once hark reports its capture failed.
-  $('restart').hidden = !(mine() || (s && s.state === 'failed' && st.call === call));
+  // Restarting is for the call on screen, and it is the recovery from every ending that is not a
+  // stop, including a dead agent, when the session is null and the page used to offer nothing at
+  // all. Once the call has its accurate transcript the server refuses it, so hide it then.
+  $('restart').hidden = !(st && st.call === call && !st.postprocess);
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
   notice();
   $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';

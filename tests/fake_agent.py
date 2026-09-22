@@ -13,12 +13,16 @@ answer and every session: hark gives up waiting for its own capture at 60 s and 
 `stop_answer` makes /stop answer that code and change nothing, which is hark refusing to stop,
 and `refuse_start` makes /start answer 500 and start nothing.
 
+FAKE_IGNORE_TERM makes it survive the SIGTERM of a relaunch, which is an agent still holding
+hark's port after the kill, so no fresh one can bind it.
+
 POST /_fake {"session": {...}, "finish": s, "wedged": bool, "capturing": bool, "stop_answer": code,
 "refuse_start": bool}
 changes it from a test. Every request is a line in FAKE_LOG: `agent <pid> <path> <json body>`.
 """
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -96,6 +100,8 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if os.environ.get("FAKE_IGNORE_TERM") not in (None, "", "0"):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)             # an agent that outlives the relaunch's kill
     port = int(sys.argv[sys.argv.index("--remote-control") + 1])
     with open(os.environ["FAKE_LOG"], "a") as log:               # logged when it is started, not when it answers
         log.write(f"agent {os.getpid()} launched\n")

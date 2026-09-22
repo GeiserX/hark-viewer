@@ -922,6 +922,22 @@ class CutOffStart(ServerCase):
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
 
+class DeathlessAgent(ServerCase):
+    """An agent that does not die when the relaunch kills it keeps hark's port, so no fresh one can
+    bind it. The wait for it to go used to just run out, and ensure_agent then found that same agent
+    answering and called it a success, so the next start went straight back to the wedged capture."""
+    EXTRA_ENV = {"FAKE_IGNORE_TERM": "1", "HARK_VIEWER_DIE_WAIT": "2"}
+
+    def test_a_relaunch_the_old_agent_survives_is_a_failure_not_a_success(self):
+        self.fake(wedged=True, finish=1)
+        made, folder = self.new()
+        code, body = self.api("/api/restart", "POST")
+        self.assertEqual(code, 502, body)
+        self.assertIn("did not come back", body["error"])
+        self.assertEqual(len(set(self.launches())), 1)                   # no second agent was started against the live port
+        self.assertIn("still answers after", (self.tmp / ".server.log").read_text())
+
+
 class SlowAgent(ServerCase):
     """A hark slower to open its port than the server's patience for it used to get a second Popen
     from the next call, so two agents raced for the port and one became an orphan."""

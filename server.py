@@ -38,11 +38,12 @@ STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a 
 # would be reported as a failure.
 START_TIMEOUT = float(os.environ.get("HARK_VIEWER_START_TIMEOUT", "90"))
 AGENT_WAIT = float(os.environ.get("HARK_VIEWER_AGENT_WAIT", "30"))  # how long a freshly started hark agent gets to answer /status
+DIE_WAIT = float(os.environ.get("HARK_VIEWER_DIE_WAIT", "10"))      # how long a killed agent gets to let go of hark's port
 # The longest one /api/new or /api/restart can take: waiting out a capture that is still
 # finishing, a start hark sits on for its whole timeout, the agent relaunch that is the only way
 # out of a wedged capture, and one more start. /api/status reports this number and the launcher
 # makes it its own --max-time, so no client ever gives up on a recording that did begin.
-PATIENCE = round(STOP_WAIT + 2 * START_TIMEOUT + AGENT_WAIT + 15)
+PATIENCE = round(STOP_WAIT + 2 * START_TIMEOUT + AGENT_WAIT + DIE_WAIT + 5)
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # An ending other than a stop is where Restart records on into the same call, and the accurate
 # transcript refuses a call that already has one. So those endings get the transcript only after
@@ -182,9 +183,15 @@ def relaunch_agent():
             os.kill(int(pid), 15)                           # SIGTERM lets hark finalise the audio file
         except (OSError, ValueError):
             pass
-    for _ in range(50):
-        if hark("GET", "/status")[0] != 200:
-            break
+    # An agent that outlives the kill still holds the port, so nothing fresh can bind it. Falling
+    # out of this wait used to leave ensure_agent facing that same agent, answering: it returned
+    # True without starting anything and the next /start went back to the wedged capture.
+    end = time.time() + DIE_WAIT
+    while hark("GET", "/status")[0] == 200:
+        if time.time() > end:
+            print(f"relaunch: whatever listens on hark's port {HARK_PORT} still answers after {DIE_WAIT} s, "
+                  "so no fresh agent can have it", file=sys.stderr, flush=True)
+            return False
         time.sleep(0.2)
     agent = None                                            # a fresh one is the whole point, even if ours is slow to die
     return ensure_agent()

@@ -41,6 +41,13 @@ jobs:
       - name: The suite
         env:
           PY: ${{ matrix.python }}
+          FLOOR: "50"
         run: |
+          set -o pipefail
           "$PY" --version
-          "$PY" -m unittest discover -s tests -v
+          "$PY" -m unittest discover -s tests -v 2>&1 | tee /tmp/suite.log
+          # A gate that cannot go red is not a gate. `unittest discover` prints OK and exits 0
+          # against a tests directory that has been renamed or moved, so the count is checked too.
+          ran=$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' /tmp/suite.log | tail -1)
+          echo "ran ${ran:-0} tests, floor $FLOOR"
+          test "${ran:-0}" -ge "$FLOOR"

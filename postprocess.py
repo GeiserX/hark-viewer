@@ -155,20 +155,37 @@ def read_status(folder):
     return st
 
 
+def elapsed_seconds(etime):
+    """`ps -o etime=` as seconds. Its format is [[dd-]hh:]mm:ss."""
+    days, dash, rest = etime.strip().partition("-")
+    if not dash:
+        days, rest = "0", days
+    parts = [float(piece) for piece in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0.0)
+    return int(days) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
 def alive(pid, started=None):
-    """Is this the job that wrote `started`? A zombie is dead, and so is a stranger that got the same pid later."""
+    """Is this the job that wrote `started`? A zombie is dead, and so is a stranger that got the same pid later.
+
+    The age comes from how long the process has been running, not from `ps -o lstart`: turning a
+    local clock time into an epoch is an hour out for an hour after a DST fall-back, which read a
+    running job as failed and let --force start a second job over the same call. Elapsed time needs
+    no timezone. It is whole seconds and rounds down, hence the three-second slack below.
+    """
     try:
-        run = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+        run = subprocess.run(["ps", "-o", "stat=,etime=", "-p", str(int(pid))], capture_output=True, text=True,
                              timeout=PS_TIMEOUT, env={**os.environ, "LC_ALL": "C"})
-        stat, born = run.stdout.strip().split(None, 1)
-        born = time.mktime(time.strptime(born.strip(), "%a %b %d %H:%M:%S %Y"))
+        stat, etime = run.stdout.strip().split(None, 1)
+        born = time.time() - elapsed_seconds(etime)
     except subprocess.TimeoutExpired:
         return True                    # `ps` hung: better to say nothing than to call a running job dead
     except (OSError, TypeError, ValueError):
         return False
     if stat.startswith("Z"):
         return False
-    return not isinstance(started, (int, float)) or born <= started + 2   # the job writes `started` after it is born
+    return not isinstance(started, (int, float)) or born <= started + 3   # the job writes `started` after it is born
 
 
 def settle(paths):

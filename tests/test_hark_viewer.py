@@ -420,6 +420,24 @@ class LanguageSource(unittest.TestCase):
         self.assertEqual([e["text"] for e in lines], ["the accurate text"])
 
 
+class Alive(unittest.TestCase):
+    """Whether a pid is still the job that wrote a call's status file."""
+
+    def test_the_elapsed_time_ps_reports_reads_as_seconds(self):
+        """The age used to come from `ps -o lstart` through the local clock, which is an hour out
+        for an hour after a DST fall-back: a running job read as failed, and --force then started a
+        second job over the same call. Elapsed time needs no timezone."""
+        for etime, seconds in (("        0:01", 1), ("05:06", 306), ("1:02:03", 3723),
+                               ("2-03:04:05", 183845), ("  12-00:00:00  ", 1036800)):
+            self.assertEqual(postprocess.elapsed_seconds(etime), seconds, etime)
+
+    def test_this_process_is_alive_and_the_same_pid_with_an_older_start_is_not(self):
+        self.assertTrue(postprocess.alive(os.getpid(), time.time()))
+        self.assertFalse(postprocess.alive(os.getpid(), time.time() - 86400))
+        self.assertFalse(postprocess.alive(2 ** 30))          # no such pid
+        self.assertFalse(postprocess.alive("not a pid"))
+
+
 class Relabel(unittest.TestCase):
     """relabel_speakers.py, driven with saved spans, so it needs neither hark nor ffmpeg."""
 

@@ -353,7 +353,11 @@ def language_verdict(lines):
     for code, confidence in votes:
         if code and confidence >= LANG_MIN_CONFIDENCE:
             counted[code] = counted.get(code, 0) + 1
-    total = sum(counted.values())
+    # Every line long enough to be worth reading counts, whether or not the recognizer
+    # could name it. Counting only the named ones shrinks the denominator, which makes the
+    # share below easier to reach and a second language easier to claim. Shares can total
+    # under 1 for the same reason: what is missing is the lines it could not call.
+    judged_total = len(judged)
     dominant = max(counted, key=lambda code: (counted[code], code)) if counted else None
     other, runs = [], {}
     if dominant:
@@ -365,10 +369,12 @@ def language_verdict(lines):
     # What the call was actually spoken in: the dominant language, plus any other that holds over
     # more than one line. A single line is where the recognizer is wrong, not where a language starts.
     present = ([dominant] if dominant else []) + sorted(
-        code for code, n in runs.items() if n >= LANG_OTHER_LINES or (total and n / total >= LANG_OTHER_SHARE))
-    return {"engine": "NLLanguageRecognizer", "lines": len(lines), "judged": total, "dominant": dominant,
-            "shares": {code: round(n / total, 3) for code, n in sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))}
-            if total else {},
+        code for code, n in runs.items()
+        if n >= LANG_OTHER_LINES or (judged_total and n / judged_total >= LANG_OTHER_SHARE))
+    return {"engine": "NLLanguageRecognizer", "lines": len(lines), "judged": judged_total, "dominant": dominant,
+            "shares": {code: round(n / judged_total, 3)
+                       for code, n in sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))}
+            if judged_total else {},
             "present": present, "mixed": len(present) > 1,
             "other_lines": len(other), "other": other[:LANG_MAX_OTHER]}
 

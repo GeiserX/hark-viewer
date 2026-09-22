@@ -35,6 +35,12 @@ STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a 
 # and answers `capturing: false`, so this has to outlast that or a recording that did start
 # would be reported as a failure.
 START_TIMEOUT = float(os.environ.get("HARK_VIEWER_START_TIMEOUT", "90"))
+AGENT_WAIT = float(os.environ.get("HARK_VIEWER_AGENT_WAIT", "30"))  # how long a freshly started hark agent gets to answer /status
+# The longest one /api/new or /api/restart can take: waiting out a capture that is still
+# finishing, a start hark sits on for its whole timeout, the agent relaunch that is the only way
+# out of a wedged capture, and one more start. /api/status reports this number and the launcher
+# makes it its own --max-time, so no client ever gives up on a recording that did begin.
+PATIENCE = round(STOP_WAIT + 2 * START_TIMEOUT + AGENT_WAIT + 15)
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # What every call is recorded with. Opus because it stays playable while hark is
 # still writing it, so a crash costs nothing; m4a and flac hold back the header
@@ -326,7 +332,7 @@ class Handler(SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/api/status":
             code, body = status()
-            return self.reply(200, {**body, "workspaces": workspaces()})
+            return self.reply(200, {**body, "workspaces": workspaces(), "patience": PATIENCE})
         if path in ("/", "/index.html"):
             raw = (HERE / "viewer.html").read_bytes()
             self.send_response(200)

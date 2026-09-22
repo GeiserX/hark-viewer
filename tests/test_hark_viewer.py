@@ -668,5 +668,58 @@ class SlowWatcher(ServerCase):
         self.wait_for(lambda: (postprocess.read_status(folder) or {}).get("state") == "done", "the first call's transcript")
 
 
+class Launcher(unittest.TestCase):
+    """The `hark-viewer` command against a stub page server: no browser, no hark, no server.py."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.port = free_port()
+        self.delay = 0.0
+        self.patience = 240
+        case = self
+
+        class Stub(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def answer(self, body):
+                raw = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                self.answer({"agent": True, "active": False, "session": None, "call": None,
+                             "parts": 0, "postprocess": None, "workspaces": [], "patience": case.patience})
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                time.sleep(case.delay)
+                self.answer({"call": "work/2026-09-21_170000", "folder": str(case.tmp),
+                             "url": f"http://127.0.0.1:{case.port}/?call=work/2026-09-21_170000"})
+
+        self.stub = ThreadingHTTPServer(("127.0.0.1", self.port), Stub)
+        threading.Thread(target=self.stub.serve_forever, daemon=True).start()
+        self.addCleanup(self.stub.server_close)
+        self.addCleanup(self.stub.shutdown)
+
+    def run_launcher(self, *args, **env):
+        return subprocess.run(
+            [str(REPO / "hark-viewer"), *args], capture_output=True, text=True, timeout=120,
+            env={**os.environ, "HARK_VIEWER_PORT": str(self.port), "HARK_VIEWER_ROOT": str(self.tmp),
+                 "HARK_VIEWER_BROWSER": "off", "HARK_VIEWER_CONFIG": str(self.tmp / "absent.env"), **env})
+
+    def test_a_start_the_server_takes_longer_than_15_s_to_answer_is_still_a_recording(self):
+        """It used to pass --max-time 15 to every call while the server's own budget for one start
+        ran to 105 s, so a start the server waited out reached the user as curl exit 28."""
+        self.delay = 16
+        run = self.run_launcher("work", "slow start")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("work/2026-09-21_170000", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

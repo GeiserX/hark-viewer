@@ -205,10 +205,20 @@ def relaunch_agent():
 
 
 def ask_start(body):
-    """POST /start once. A 2xx for a capture hark says is not running is a failed start, not a call."""
+    """POST /start once. A 2xx for a capture hark says is not running is a failed start, not a call.
+
+    Such a start is stopped before it is reported, because hark goes on holding the session at
+    `recording` while this server reports the call inactive. Left there, hark's own "already
+    active" check refused every later start, and the page had no Stop button to clear it: from
+    a browser the recorder was dead until someone ran `hark-viewer stop` in a terminal.
+    """
     code, answer = hark("POST", "/start", body, timeout=START_TIMEOUT)
     if code in (200, 201) and answer.get("capturing") is False:
-        return 502, {"error": f"hark answered the start but says it is not capturing: {answer}"}
+        error = f"hark answered the start but says it is not capturing: {answer}"
+        stop_code, stop_body = hark("POST", "/stop")
+        if stop_code not in (200, 201, 204, 404):
+            error += f". Its session would not stop either: {stop_body.get('error') or stop_body}"
+        return 502, {"error": error}
     return code, answer
 
 
@@ -264,8 +274,19 @@ def new_call(workspace, title):
             watch.call = watch.ended = None
         workspace = slug(workspace, "calls")
         name = time.strftime("%Y-%m-%d_%H%M%S") + (f"_{slug(title)}" if slug(title) else "")
+        # The timestamp is only unique to the second, and a start that failed after hark had
+        # already written audio leaves its folder behind on purpose. The second call in that
+        # second used to raise FileExistsError out of the request thread, so the caller got no
+        # answer at all: an empty reply to the launcher and nothing to the page.
         folder = ROOT / workspace / name
-        folder.mkdir(parents=True)
+        for n in range(2, 60):
+            try:
+                folder.mkdir(parents=True)
+                break
+            except FileExistsError:
+                folder = ROOT / workspace / f"{name}-{n}"
+        else:
+            return 500, {"error": f"{ROOT / workspace / name} and 58 names after it are all taken"}
         code, body = start_recording(folder / AUDIO, folder / "transcript.json")
         if code not in (200, 201):
             recording = recording_anyway(folder, folder / AUDIO, code, body)
@@ -282,7 +303,7 @@ def new_call(workspace, title):
         if link.is_symlink() or link.exists():
             link.unlink()
         link.symlink_to(folder)
-        call = f"{workspace}/{name}"
+        call = f"{workspace}/{folder.name}"
         watch.call, watch.ended = call, None
         return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}
 
@@ -314,7 +335,12 @@ def restart_call(force=False):
                 meta["started"] = (folder / AUDIO).stat().st_birthtime
             except (OSError, AttributeError):
                 return 409, {"error": f"{call} has no start time in meta.json and no {AUDIO} to take one from", "call": call}
-        if st["active"]:
+        # hark's own state, not this server's judgement of the capture. Once hark sets
+        # `capturing: false` the server reports the call inactive while hark still holds the
+        # session at `recording`, so gating on `active` skipped the stop, the start met hark's
+        # "already active" and Restart answered "the call is stopped and part 2 did not start",
+        # which was false and left the only recovery outside the browser.
+        if state in LIVE:
             # The answer used to be discarded. A stop that failed left the call recording, the
             # /start below came back 409 "already active", and the user was told the call was
             # stopped and the part had not started: the first half false, and an invitation to

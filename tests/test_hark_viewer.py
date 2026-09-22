@@ -730,6 +730,23 @@ class Server(ServerCase):
             self.assertTrue(st["active"])
             self.assertEqual(st["session"]["callAudio"], report)
 
+    def test_a_second_call_in_the_same_second_gets_its_own_folder(self):
+        """The folder name is a timestamp to the second, and a start that failed after hark had
+        written audio leaves the folder behind on purpose. mkdir then raised FileExistsError out of
+        the request thread, so the caller got no answer: an empty reply, not an error."""
+        # Every second the server could pick is taken, so the collision does not depend on timing.
+        taken = [time.strftime("%Y-%m-%d_%H%M%S", time.localtime(time.time() + d)) for d in range(4)]
+        for name in taken:
+            (self.tmp / "work" / name).mkdir(parents=True)
+            (self.tmp / "work" / name / "audio.opus").write_bytes(b"older call")
+        made, folder = self.new()
+        self.assertNotIn(folder.name, taken)
+        self.assertTrue(any(folder.name.startswith(name) for name in taken), folder.name)
+        self.assertEqual((folder / "audio.opus").read_bytes(), b"audio")      # its own, not the one it found
+        for name in taken:
+            self.assertEqual((self.tmp / "work" / name / "audio.opus").read_bytes(), b"older call")
+        self.assertEqual(self.api("/api/status")[1]["call"], made["call"])
+
     def test_restart_records_on_into_the_same_folder_and_does_not_end_the_call(self):
         # hark as it is: `stopped` at once, the capture finishing behind it, /start refused meanwhile.
         # Well inside HARK_VIEWER_STOP_WAIT, or CPU contention alone relaunches the agent.
@@ -1054,6 +1071,39 @@ class NotCapturing(ServerCase):
         self.assertIn("not capturing", answer["error"])
         self.assertFalse(self.api("/api/status")[1]["active"])
         self.assertFalse((self.tmp / "current").exists())         # the last call, whichever it was, is not this one
+
+    def test_a_disowned_start_leaves_nothing_for_the_next_call_to_trip_over(self):
+        """hark went on holding the session at `recording` while the server reported the call
+        inactive, so hark's own "already active" check refused every later start. The page was
+        `ready` with the busy buttons hidden, so there was no Stop to clear it: from a browser the
+        recorder stayed dead until someone ran `hark-viewer stop` in a terminal."""
+        code, answer = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 502, answer)
+        self.assertEqual([p for p, _ in self.seen()], ["/start", "/stop"])
+        self.assertEqual((self.api("/api/status")[1]["session"] or {})["state"], "stopped")
+        self.fake(capturing=True)                                 # hark's capture works again
+        made, folder = self.new()
+        self.assertTrue(self.api("/api/status")[1]["active"])
+
+    def test_restart_stops_a_capture_hark_has_disowned_instead_of_reporting_a_stop_it_skipped(self):
+        """The stop was gated on the server's own reading of the capture, which is false the moment
+        hark says `capturing: false`, so Restart skipped it, the start met hark's "already active",
+        and the answer was "the call is stopped and part 2 did not start". The call was not
+        stopped. Restart was the only control the page offered, and it could not recover."""
+        self.fake(capturing=True)
+        made, folder = self.new()
+        self.fake(capturing=False)                                # hark gives up on its own capture
+        st = self.api("/api/status")[1]
+        self.assertFalse(st["active"])                            # the page shows the red banner
+        self.assertEqual(st["session"]["state"], "recording")     # while hark still holds the session
+        code, again = self.api("/api/restart", "POST")
+        self.assertIn("/stop", [p for p, _ in self.seen()])
+        self.assertNotIn("the call is stopped", str(again))
+        self.assertIn("not capturing", again["error"])             # the true reason, and hark is free again
+        self.assertEqual(len(postprocess.parts_of(folder)), 1)     # the part that never started is out
+        self.fake(capturing=True)
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("part")), (200, 2), again)
 
 
 class SlowWatcher(ServerCase):

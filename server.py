@@ -30,6 +30,7 @@ HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 LIVE = ("recording", "paused")
 PROBE_WAIT = 10                                             # lsof and ps answer at once or not at all
+HARK_CALL = 10                                              # every call to hark's agent that is not a start
 STALE = 3600                                                # a call not written to for this long is not restarted unasked
 STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
 # hark answers a start only once the capture is really running, and opening a cold recognizer
@@ -39,11 +40,19 @@ STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a 
 START_TIMEOUT = float(os.environ.get("HARK_VIEWER_START_TIMEOUT", "90"))
 AGENT_WAIT = float(os.environ.get("HARK_VIEWER_AGENT_WAIT", "30"))  # how long a freshly started hark agent gets to answer /status
 DIE_WAIT = float(os.environ.get("HARK_VIEWER_DIE_WAIT", "10"))      # how long a killed agent gets to let go of hark's port
-# The longest one /api/new or /api/restart can take: waiting out a capture that is still
-# finishing, a start hark sits on for its whole timeout, the agent relaunch that is the only way
-# out of a wedged capture, and one more start. /api/status reports this number and the launcher
-# makes it its own --max-time, so no client ever gives up on a recording that did begin.
-PATIENCE = round(STOP_WAIT + 2 * START_TIMEOUT + AGENT_WAIT + DIE_WAIT + 5)
+# The longest one /api/new or /api/restart can take, added up over the chain rather than
+# estimated. /api/status reports this number and the launcher makes it its own --max-time, so a
+# client must never give up before the server does: the earlier number left out both probes, the
+# drain, the relaunch's own wait for a fresh agent and every plain call to hark, and came to 240
+# against a chain that really runs to about 350.
+PATIENCE = round(
+    HARK_CALL + AGENT_WAIT                                  # ensure_agent, before the turn lock
+    + HARK_CALL                                             # the status() the call starts from
+    + STOP_WAIT + START_TIMEOUT + HARK_CALL                 # waiting out a capture, and the start that wait ends on
+    + 2 * PROBE_WAIT + DIE_WAIT + HARK_CALL + AGENT_WAIT    # relaunch_agent: lsof, one ps, the drain, a fresh agent
+    + START_TIMEOUT + HARK_CALL                             # the start after the relaunch
+    + HARK_CALL                                             # recording_anyway asking what hark is really doing
+    + 5)
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # An ending other than a stop is where Restart records on into the same call, and the accurate
 # transcript refuses a call that already has one. So those endings get the transcript only after
@@ -81,7 +90,7 @@ def object_response(code, value):
                           f"it returned a JSON {type(value).__name__}, not an object"}
 
 
-def hark(method, path, body=None, timeout=10):
+def hark(method, path, body=None, timeout=HARK_CALL):
     data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
     req = urllib.request.Request(HARK_URL + path, data=data, method=method)
     try:

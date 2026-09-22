@@ -614,6 +614,43 @@ class HarkClient(unittest.TestCase):
         self.assertIn("not an object", body["error"])
 
 
+class Patience(unittest.TestCase):
+    """`patience` is the number the launcher makes its own --max-time, so it must never be smaller
+    than the time the server can spend. It was an estimate, and it came to 240 against a chain
+    that runs to about 350: a start the server was still completing reached the user as a curl
+    timeout and launcher exit 70, while SKILL.md says any other non-zero exit means nothing is
+    being recorded."""
+
+    def chain(self):
+        """The same worst case, written out here rather than imported, so a term dropped from
+        either side shows up as a disagreement instead of agreeing with itself."""
+        return (server.HARK_CALL + server.AGENT_WAIT                    # ensure_agent, before the turn lock
+                + server.HARK_CALL                                      # status()
+                + server.STOP_WAIT + server.START_TIMEOUT + server.HARK_CALL
+                + 2 * server.PROBE_WAIT + server.DIE_WAIT + server.HARK_CALL + server.AGENT_WAIT
+                + server.START_TIMEOUT + server.HARK_CALL               # the start after the relaunch
+                + server.HARK_CALL)                                     # recording_anyway
+
+    def test_patience_is_not_shorter_than_the_longest_start(self):
+        self.assertGreaterEqual(server.PATIENCE, self.chain())
+
+    def test_the_estimate_it_replaced_was_shorter_than_the_chain(self):
+        # The control for the test above: the old formula counted the wait-out, two starts, one
+        # agent wait and the drain, and nothing else, so it could not have covered the chain.
+        estimate = server.STOP_WAIT + 2 * server.START_TIMEOUT + server.AGENT_WAIT + server.DIE_WAIT + 5
+        self.assertLess(estimate, self.chain())
+
+    def test_every_wait_in_the_chain_is_counted(self):
+        # Each of these is a real timeout on the path, so raising any one must raise patience.
+        for name in ("AGENT_WAIT", "STOP_WAIT", "START_TIMEOUT", "DIE_WAIT", "PROBE_WAIT", "HARK_CALL"):
+            was = getattr(server, name)
+            try:
+                setattr(server, name, was + 100)
+                self.assertGreater(self.chain(), server.PATIENCE, f"{name} is not in the chain")
+            finally:
+                setattr(server, name, was)
+
+
 class ServerCase(unittest.TestCase):
     """server.py on spare ports. It starts the fake agent itself, the way it starts hark."""
     WATCH = "0.1"

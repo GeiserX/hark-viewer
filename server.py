@@ -103,10 +103,20 @@ def call_of(session):
         return None
 
 
+def live(session):
+    """Is hark recording right now?
+
+    `capturing: false` is hark saying the capture behind a session it still calls `recording` is
+    not running: it gives up waiting for its own capture at 60 s and answers that. Taking the
+    state alone gave such a call a folder, a `current` symlink and a pulsing REC dot.
+    """
+    return bool(session) and session.get("state") in LIVE and session.get("capturing") is not False
+
+
 def status():
     code, body = hark("GET", "/status")
     session = body.get("session") if code == 200 else None
-    active = bool(session) and session.get("state") in LIVE
+    active = live(session)
     call = call_of(session) if session else None
     if not call and (ROOT / "current").is_symlink():       # agent restarted: fall back to the last call made
         call = call_of({"transcript": str(ROOT / "current" / "transcript.json")})
@@ -136,6 +146,14 @@ def relaunch_agent():
     return ensure_agent()
 
 
+def ask_start(body):
+    """POST /start once. A 2xx for a capture hark says is not running is a failed start, not a call."""
+    code, answer = hark("POST", "/start", body, timeout=START_TIMEOUT)
+    if code in (200, 201) and answer.get("capturing") is False:
+        return 502, {"error": f"hark answered the start but says it is not capturing: {answer}"}
+    return code, answer
+
+
 def start_recording(audio, transcript):
     """POST /start, patient with a capture that is still finishing.
 
@@ -147,7 +165,7 @@ def start_recording(audio, transcript):
     body = {**START, "audio": str(audio), "transcript": str(transcript)}
     end = time.time() + STOP_WAIT
     while True:
-        code, answer = hark("POST", "/start", body, timeout=START_TIMEOUT)
+        code, answer = ask_start(body)
         if code in (200, 201) or not (code == 409 and "finishing" in str(answer.get("error"))):
             return code, answer                             # hark answers a started recording with 201
         if time.time() >= end:
@@ -155,7 +173,7 @@ def start_recording(audio, transcript):
         time.sleep(0.5)
     if not relaunch_agent():
         return 502, {"error": f"the capture is wedged and the hark agent ({HARK_BIN}) did not come back"}
-    return hark("POST", "/start", body, timeout=START_TIMEOUT)
+    return ask_start(body)
 
 
 def recording_anyway(folder, code, answer):
@@ -168,7 +186,7 @@ def recording_anyway(folder, code, answer):
     """
     st_code, st = hark("GET", "/status")
     session = (st.get("session") or {}) if st_code == 200 else {}
-    if session.get("state") in LIVE and Path(session.get("audio") or "").resolve() == (folder / AUDIO).resolve():
+    if live(session) and Path(session.get("audio") or "").resolve() == (folder / AUDIO).resolve():
         print(f"new: hark answered the start with {code} {answer}, and is recording {folder.name}; carrying on",
               file=sys.stderr, flush=True)
         return session

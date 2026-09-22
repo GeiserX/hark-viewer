@@ -601,6 +601,17 @@ class Server(ServerCase):
         self.assertEqual(self.api("/api/restart", "POST")[0], 409)
         self.assertFalse((folder / "audio.part2.opus").exists())
 
+    def test_a_capture_hark_says_is_not_running_is_not_an_active_call(self):
+        """hark keeps calling the session `recording` and sets `capturing: false`. Reading the state
+        alone left a pulsing REC dot and an elapsed clock over a capture hark knew was not there."""
+        made, folder = self.new()
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        self.fake(capturing=False)
+        st = self.api("/api/status")[1]
+        self.assertFalse(st["active"])
+        self.assertIs(st["session"]["capturing"], False)     # and the page gets the field to say so with
+        self.assertEqual(st["call"], made["call"])
+
     def test_a_second_call_while_one_records_is_still_refused(self):
         self.new()
         self.assertEqual(self.api("/api/new", "POST", {"workspace": "work", "title": ""})[0], 409)
@@ -655,6 +666,20 @@ class CutOffStart(ServerCase):
         self.assertEqual((self.tmp / "current").resolve(), (self.tmp / made["call"]).resolve())
         self.assertEqual(json.loads((self.tmp / made["call"] / "meta.json").read_text())["id"], "X")
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
+
+
+class NotCapturing(ServerCase):
+    """hark gives up waiting for its own capture at 60 s and answers the start 2xx with
+    `capturing: false`. Nothing read the field, so that start became a call folder, a `current`
+    symlink and a live recording on the page while hark recorded nothing."""
+    EXTRA_ENV = {"FAKE_CAPTURING": "0"}
+
+    def test_a_start_hark_answered_without_capturing_is_not_a_recording(self):
+        code, answer = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 502, answer)
+        self.assertIn("not capturing", answer["error"])
+        self.assertFalse(self.api("/api/status")[1]["active"])
+        self.assertFalse((self.tmp / "current").exists())         # the last call, whichever it was, is not this one
 
 
 class SlowWatcher(ServerCase):

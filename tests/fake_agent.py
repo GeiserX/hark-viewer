@@ -6,8 +6,12 @@ seconds after that, /status does not show it, and until it is over /start answer
 "still finishing". With `wedged` set it never is over, and after FAKE_STOP_TIMEOUT the
 session reads `failed`, as hark's own watchdog does it. Only a new agent gets out of that.
 
-POST /_fake {"session": {...}, "finish": s, "wedged": bool} changes it from a test.
-Every request is a line in FAKE_LOG: `agent <pid> <path> <json body>`.
+`capturing` is true unless FAKE_CAPTURING says otherwise, and it rides on both the start's
+answer and every session: hark gives up waiting for its own capture at 60 s and then says
+`recording` with `capturing: false`, which is a start that recorded nothing.
+
+POST /_fake {"session": {...}, "finish": s, "wedged": bool, "capturing": bool} changes it
+from a test. Every request is a line in FAKE_LOG: `agent <pid> <path> <json body>`.
 """
 import json
 import os
@@ -18,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 S = {"session": None, "finish": float(os.environ.get("FAKE_FINISH", "0")), "wedged": False, "writing_until": 0.0,
-     "stop_timeout": float(os.environ.get("FAKE_STOP_TIMEOUT", "10"))}
+     "stop_timeout": float(os.environ.get("FAKE_STOP_TIMEOUT", "10")),
+     "capturing": os.environ.get("FAKE_CAPTURING", "1") not in ("0", "false", "no")}
 
 
 def finishing():
@@ -46,7 +51,8 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        self.answer(200, {"session": S["session"]})
+        session = S["session"] and {**S["session"], "capturing": S["capturing"]}
+        self.answer(200, {"session": session})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -70,7 +76,7 @@ class H(BaseHTTPRequestHandler):
                             "audio": body["audio"], "transcript": body["transcript"]}
             if os.environ.get("FAKE_START_ANSWER"):   # hark's HTTP server cut the handler off: a 500 for a capture that runs on
                 return self.answer(int(os.environ["FAKE_START_ANSWER"]), {})
-            return self.answer(201, {"id": "X"})
+            return self.answer(201, {"id": "X", "capturing": S["capturing"]})
         if self.path == "/stop":
             if not live:
                 return self.answer(404, {"error": "no active recording"})

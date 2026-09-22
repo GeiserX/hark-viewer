@@ -118,6 +118,8 @@ const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + p
 const span = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600); return (h ? h + ':' : '') + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60); };
 const get = path => fetch(path + (path.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' });
 const mine = () => st && st.active && st.call === call;   // is the call on screen the one being recorded?
+// hark still calls the session `recording` while telling us the capture behind it never opened.
+const notCapturing = () => !!(st && st.call === call && st.session && st.session.capturing === false);
 
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 6000); }
 
@@ -218,7 +220,9 @@ async function poll() {
 function notice() {
   const s = st && st.session, el = $('notice');
   let kind = '', text = '';
-  if (mine() && s.callAudio) {
+  // hark answered the start and then said its capture never opened. Nothing is being recorded.
+  if (notCapturing()) { kind = 'dead'; text = 'NOTHING IS BEING RECORDED. hark answered the start but says its capture is not running. Press Restart.'; }
+  else if (mine() && s.callAudio) {
     const a = s.callAudio, n = a.restarts ? a.restarts + (a.restarts === 1 ? ' capture restart' : ' capture restarts') : '';
     if (a.state === 'dead') { kind = 'dead'; text = 'CALL AUDIO LOST for ' + span(a.silentFor || 0) + '. Audio is playing and hark hears none of it. hark is restarting the capture' + (n ? ' (' + n + ' so far)' : '') + '. If this stays, press Restart.'; }
     else if (a.state === 'silent') { kind = 'quiet'; text = 'call side quiet for ' + span(a.silentFor || 0); }
@@ -250,6 +254,7 @@ function paint() {
     state = s.state; label = s.state === 'paused' ? 'paused' : 'rec';
     meta = span(s.elapsed) + (s.muted ? '  ·  mic muted' : '') + (lastLineAt ? '  ·  last line ' + span((Date.now() - lastLineAt) / 1000) + ' ago' : '');
   }
+  else if (notCapturing()) { state = 'offline'; label = 'not capturing'; meta = 'hark answered the start and is recording nothing'; }
   else if (s && s.state === 'failed' && st.call === call) { state = 'offline'; label = 'recording failed'; meta = s.error || ''; }
   else if (st && st.active) { state = 'ready'; label = 'another call is recording'; }
   else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }

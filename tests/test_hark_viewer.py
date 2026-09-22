@@ -659,6 +659,7 @@ class ServerCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(self.keep_logs)                  # cleanups run last in first out: before the delete
         self.log = self.tmp / "calls.log"
         self.server_log = open(self.tmp / ".server.log", "ab")
         self.addCleanup(self.server_log.close)
@@ -679,6 +680,39 @@ class ServerCase(unittest.TestCase):
         self.addCleanup(self.kill_agent)
         self.addCleanup(self.proc.wait)
         self.addCleanup(self.proc.terminate)
+
+    def run(self, result=None):
+        """Print the logs of a test that failed.
+
+        A failure in one of these is nearly always the server or its agent, and their reasons are
+        in their own logs inside a temp directory that is deleted before anyone reads the output.
+        On CI that left nothing to work from. A cleanup captures the text before the delete, and
+        it is printed only when the test really failed.
+        """
+        self.kept = {}
+        def counted(r):
+            return len(r.failures) + len(r.errors)
+        before = counted(result) if result is not None else 0
+        out = super().run(result)
+        if result is not None and counted(result) > before and self.kept:
+            print(f"\n--- {self.id()} ---", file=sys.stderr)
+            for name, text in self.kept.items():
+                print(f"--- {name} ---\n{text}", file=sys.stderr)
+        return out
+
+    def keep_logs(self):
+        for name in (".server.log", ".hark-agent.log", "calls.log"):
+            self.kept[name] = self.logs(name)
+        self.kept["holding hark's port"] = " ".join(self.listeners()) or "nothing"
+
+    def listeners(self):
+        """The pids holding hark's port, which is what a fresh agent has to be able to bind."""
+        try:
+            run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{self.agent_port}", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return [f"lsof: {e}"]
+        return run.stdout.split()
 
     def spawn(self):
         return subprocess.Popen(
@@ -1057,11 +1091,6 @@ class OverlappingStarts(ServerCase):
     hark's port, and whichever lost became an orphan `quit` might or might not have matched."""
     EXTRA_ENV = {"FAKE_AGENT_DELAY": "2", "HARK_VIEWER_AGENT_WAIT": "20"}
 
-    def listening(self):
-        run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{self.agent_port}", "-sTCP:LISTEN"],
-                             capture_output=True, text=True, timeout=30)
-        return run.stdout.split()
-
     def test_two_calls_that_arrive_together_start_one_agent(self):
         self.wait_for(lambda: self.api("/api/status")[1]["agent"], "the agent the server started", 30)
         self.assertEqual(len(set(self.launches())), 1)
@@ -1076,7 +1105,7 @@ class OverlappingStarts(ServerCase):
             t.join(90)
         self.assertEqual(len(answers), 2, "a request never came back")
         self.assertEqual(len(set(self.launches())), 2, self.launches())
-        self.assertEqual(len(self.listening()), 1, "two agents are holding hark's port")
+        self.assertEqual(len(self.listeners()), 1, "two agents are holding hark's port")
         self.assertEqual(sorted(code for code, _ in answers), [200, 409])   # one call, one refusal
 
 

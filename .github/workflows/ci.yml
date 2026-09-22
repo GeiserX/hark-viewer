@@ -18,7 +18,9 @@ jobs:
     # macOS, and not by preference: st_birthtime, lsof and the PyObjC bridge that carries Apple's
     # language recognizer are all macOS only. The standard runner is free on a public repository.
     runs-on: macos-latest
-    timeout-minutes: 30
+    # The suite is process-heavy and the runner is about seven times slower at it than a laptop:
+    # 18 minutes under the system python, and the first attempt at 30 was cut off mid-run.
+    timeout-minutes: 60
     strategy:
       # Both interpreters, because they are both real, and one at a time in its own job so that a
       # slow run cannot eat the other's budget. The launcher runs whichever python3 is on PATH, and

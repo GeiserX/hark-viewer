@@ -26,6 +26,8 @@ export HARK_BIN="${HARK_BIN:-hark}"
 base="http://127.0.0.1:$HARK_VIEWER_PORT"
 api() { curl -sS --noproxy '*' --max-time 15 -H 'X-Hark-Viewer: 1' -H 'Content-Type: application/json' "$@"; }
 browse() { [[ "${HARK_VIEWER_BROWSER:-}" == off ]] || open -a "${HARK_VIEWER_BROWSER:-Firefox}" "$1" 2>/dev/null || open "$1"; }
+# A literal string as an extended regular expression, for pkill -f and pgrep -f.
+ere() { print -r -- "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
 
 # A start can take minutes: the server waits out a capture that is still finishing, then hark
 # answers only once its own capture is open. The server computes its worst case and reports it as
@@ -69,8 +71,10 @@ case "${1:-}" in
     fi
     # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just
     # finished. Matched by the binary's own name, because HARK_BIN is usually a build of your own
-    # and a hardcoded `hark` left that agent running.
-    agent="${HARK_BIN:t} --remote-control"
+    # and a hardcoded `hark` left that agent running. Escaped, because pkill -f and pgrep -f read
+    # the pattern as an extended regular expression: an unescaped `hark.1` also matches harkX1, a
+    # process that is not the agent, and an unescaped `hark+2` matches nothing at all.
+    agent="$(ere "${HARK_BIN:t}") --remote-control"
     pkill -TERM -f "$agent" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
     pkill -f "$here/server.py" 2>/dev/null || true
     # Wait for it to go: starting again while a capture is still finishing gives an empty recording.

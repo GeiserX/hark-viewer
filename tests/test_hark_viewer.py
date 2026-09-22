@@ -1097,6 +1097,26 @@ class Launcher(unittest.TestCase):
         self.assertEqual(run.returncode, 1, run.stdout)
         self.assertIn("no interpreter at /nonexistent/python3", run.stderr)
 
+    def test_the_agent_pattern_matches_the_binary_name_and_nothing_near_it(self):
+        """`quit` hands the binary's name to pkill -f and pgrep -f, which read it as an extended
+        regular expression. A build called hark.1 therefore also matched harkX1, a process that is
+        not the agent, and one called hark+2 matched nothing at all. `quit` itself has no test: it
+        would pkill a real hark agent on the machine running the suite."""
+        ere = next(l for l in (REPO / "hark-viewer").read_text().splitlines() if l.startswith("ere()"))
+        # name, what the unescaped name would also have matched, escaped
+        cases = [("hark", None, "hark"), ("hark.1", "harkX1", r"hark\.1"),
+                 ("hark+2", "hark2", r"hark\+2"), ("my(hark)", "myhark", r"my\(hark\)")]
+        script = ere + "\n" + 'for n in "$@"; do print -r -- "$(ere "$n")"; done'
+        run = subprocess.run(["zsh", "-c", script, "zsh", *[n for n, _, _ in cases]],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.split("\n")[:len(cases)], [e for _, _, e in cases])
+        for name, neighbour, escaped in cases:
+            self.assertRegex(f"{name} --remote-control 8473", escaped + " --remote-control")
+            if neighbour:
+                self.assertNotRegex(f"{neighbour} --remote-control 8473", escaped + " --remote-control")
+                self.assertRegex(f"{neighbour} --remote-control 8473", name + " --remote-control")  # unescaped, it matched
+
 
 if __name__ == "__main__":
     unittest.main()

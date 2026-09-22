@@ -257,7 +257,9 @@ function paint() {
   else if (notCapturing()) { state = 'offline'; label = 'not capturing'; meta = 'hark answered the start and is recording nothing'; }
   else if (s && s.state === 'failed' && st.call === call) { state = 'offline'; label = 'recording failed'; meta = s.error || ''; }
   else if (st && st.active) { state = 'ready'; label = 'another call is recording'; }
-  else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }
+  // Saved as soon as the call is over, with or without lines: a call nobody spoke on used to read
+  // 'ready', which looks like a call that was never recorded.
+  else if (st && call) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }
   b.className = state + (pinned ? '' : ' scrolled');
   $('state').textContent = label; $('meta').textContent = meta;
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
@@ -267,6 +269,9 @@ function paint() {
   // all. Once the call has its accurate transcript the server refuses it, so hide it then.
   $('restart').hidden = !(st && st.call === call && !st.postprocess);
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
+  // That class un-hides the busy buttons for another call's recording, and Mute and Pause would
+  // then act on it: only Stop says which call it means.
+  $('mute').disabled = $('pause').disabled = !mine();
   notice();
   $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';
   $('empty').textContent = mine() ? 'Listening. A line appears each time someone pauses.' : (call ? 'No transcript lines in this call.' : 'Press Record to start a call.');

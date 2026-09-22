@@ -925,6 +925,7 @@ class Server(ServerCase):
         made, folder = self.new()
         self.assertNotIn(folder.name, taken)
         self.assertTrue(any(folder.name.startswith(name) for name in taken), folder.name)
+        self.assertTrue(folder.name.endswith("-2"), folder.name)
         self.assertEqual((folder / "audio.opus").read_bytes(), b"audio")      # its own, not the one it found
         for name in taken:
             self.assertEqual((self.tmp / "work" / name / "audio.opus").read_bytes(), b"older call")
@@ -968,6 +969,18 @@ class Server(ServerCase):
         self.assertTrue(self.api("/api/status")[1]["active"])
         self.assertEqual((self.tmp / "current" / "someone's notes.txt").read_text(), "keep me")
         self.assertIn("is a directory that is not empty", (self.tmp / ".server.log").read_text())
+
+    def test_the_last_name_on_the_list_is_tried_before_the_call_is_refused(self):
+        """The next name used to be assigned inside the loop body, so the final one was worked out
+        and never attempted: 58 names were tried where the error claimed 59."""
+        seconds = [time.strftime("%Y-%m-%d_%H%M%S", time.localtime(time.time() + d)) for d in range(4)]
+        for name in seconds:                                   # every name but the last of each second
+            (self.tmp / "work" / name).mkdir(parents=True)
+            for n in range(2, 59):
+                (self.tmp / "work" / f"{name}-{n}").mkdir()
+        made, folder = self.new()
+        self.assertTrue(folder.name.endswith("-59"), folder.name)
+        self.assertEqual(self.api("/api/status")[1]["call"], made["call"])
 
     def test_restart_records_on_into_the_same_folder_and_does_not_end_the_call(self):
         # hark as it is: `stopped` at once, the capture finishing behind it, /start refused meanwhile.

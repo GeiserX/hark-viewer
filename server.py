@@ -372,15 +372,19 @@ def new_call(workspace, title):
         # already written audio leaves its folder behind on purpose. The second call in that
         # second used to raise FileExistsError out of the request thread, so the caller got no
         # answer at all: an empty reply to the launcher and nothing to the page.
-        folder = ROOT / workspace / name
-        for n in range(2, 60):
+        base = ROOT / workspace / name
+        # Written as the list of names to try, so the name that is attempted and the name in the
+        # error are the same thing. Assigning the next name inside the loop body left the last one
+        # assigned and never tried.
+        tries = [base] + [base.with_name(f"{name}-{n}") for n in range(2, 60)]
+        for folder in tries:
             try:
                 folder.mkdir(parents=True)
                 break
             except FileExistsError:
-                folder = ROOT / workspace / f"{name}-{n}"
+                continue
         else:
-            return 500, {"error": f"{ROOT / workspace / name} and 58 names after it are all taken"}
+            return 500, {"error": f"all {len(tries)} names from {base.name} onwards are taken"}
         code, body = start_recording(folder / AUDIO, folder / "transcript.json")
         if code not in (200, 201):
             recording = recording_anyway(folder, folder / AUDIO, code, body)

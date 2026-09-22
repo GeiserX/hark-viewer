@@ -227,8 +227,8 @@ def start_recording(audio, transcript):
     return ask_start(body)
 
 
-def recording_anyway(folder, code, answer):
-    """hark's session recording into `folder`, when its start answered badly, else None.
+def recording_anyway(folder, audio, code, answer):
+    """hark's session recording into `audio`, when its start answered badly, else None.
 
     hark's HTTP server cuts a handler off at its ceiling and answers 500 in its place, and a
     client timeout looks the same from here; the capture is never told, so it runs on. A cold
@@ -237,11 +237,11 @@ def recording_anyway(folder, code, answer):
     """
     st_code, st = hark("GET", "/status")
     session = (st.get("session") or {}) if st_code == 200 else {}
-    if live(session) and Path(session.get("audio") or "").resolve() == (folder / AUDIO).resolve():
-        print(f"new: hark answered the start with {code} {answer}, and is recording {folder.name}; carrying on",
-              file=sys.stderr, flush=True)
+    if live(session) and Path(session.get("audio") or "").resolve() == Path(audio).resolve():
+        print(f"start: hark answered the start with {code} {answer}, and is recording "
+              f"{folder.name}/{Path(audio).name}; carrying on", file=sys.stderr, flush=True)
         return session
-    print(f"new: start failed with {code} {answer}", file=sys.stderr, flush=True)
+    print(f"start: start failed with {code} {answer}", file=sys.stderr, flush=True)
     return None
 
 
@@ -261,7 +261,7 @@ def new_call(workspace, title):
         folder.mkdir(parents=True)
         code, body = start_recording(folder / AUDIO, folder / "transcript.json")
         if code not in (200, 201):
-            recording = recording_anyway(folder, code, body)
+            recording = recording_anyway(folder, folder / AUDIO, code, body)
             if recording is None:
                 try:
                     folder.rmdir()
@@ -328,8 +328,14 @@ def restart_call(force=False):
         postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
         code, body = start_recording(folder / part["audio"], folder / part["transcript"])
         if code not in (200, 201):
-            postprocess.write_atomic(folder / "meta.json", was)   # it never started: take it back out
-            return 502, {"error": f"the call is stopped and part {n} did not start: {body.get('error') or body}", "call": call}
+            # The same reconciliation /api/new does, because a bad start answer means the same thing
+            # here: hark's HTTP server answers 500 for a capture that runs on. Taking the part back
+            # out of meta.json then drops a part that is recording from both transcripts.
+            recording = recording_anyway(folder, folder / part["audio"], code, body)
+            if recording is None:
+                postprocess.write_atomic(folder / "meta.json", was)   # it never started: take it back out
+                return 502, {"error": f"the call is stopped and part {n} did not start: {body.get('error') or body}", "call": call}
+            body = recording
         part["started"] = time.time()                             # when the capture opened, not when it was asked for
         postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
         watch.call, watch.ended = call, None

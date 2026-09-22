@@ -921,6 +921,16 @@ class CutOffStart(ServerCase):
         self.assertEqual(json.loads((self.tmp / made["call"] / "meta.json").read_text())["id"], "X")
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
+    def test_a_restart_whose_start_answered_500_keeps_the_part_it_started(self):
+        made, folder = self.new("cut off")
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("part")), (200, 2), again)
+        # Rolling meta.json back here would drop a part hark is recording from the joined live
+        # transcript and from the accurate pass, which is the loss /api/new already guards against.
+        self.assertEqual([p["audio"] for p in postprocess.parts_of(folder)], ["audio.opus", "audio.part2.opus"])
+        self.assertTrue((folder / "audio.part2.opus").is_file())
+        self.assertTrue(self.api("/api/status")[1]["active"])
+
 
 class DeathlessAgent(ServerCase):
     """An agent that does not die when the relaunch kills it keeps hark's port, so no fresh one can

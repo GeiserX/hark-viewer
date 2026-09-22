@@ -55,10 +55,13 @@ def resolve_call(name):
 
 
 def channel_count(audio):
-    run = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=channels", "-of", "csv=p=0", str(audio)],
-        capture_output=True, text=True)
+    try:
+        run = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=channels", "-of", "csv=p=0", str(audio)],
+            capture_output=True, text=True, timeout=postprocess.PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"ffprobe did not answer for {audio} in {postprocess.PROBE_TIMEOUT:.0f} s")
     try:
         return int(run.stdout.strip().splitlines()[0])
     except (ValueError, IndexError):
@@ -72,10 +75,13 @@ def split_call_channel(audio, dest):
     another voice wherever it overlaps, and the diarizer invents speakers.
     """
     channel = 1 if channel_count(audio) > 1 else 0
-    run = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio),
-         "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
-        capture_output=True, text=True)
+    try:
+        run = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio),
+             "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
+            capture_output=True, text=True, timeout=postprocess.PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"ffmpeg did not split the call channel in {postprocess.PROBE_TIMEOUT:.0f} s")
     if run.returncode != 0 or not dest.is_file():
         die(f"ffmpeg could not split the call channel: {run.stderr.strip()}")
     return channel
@@ -85,7 +91,10 @@ def diarize(hark_bin, wav, engine):
     """Diarized spans from hark. `-t -` writes the transcript to stdout, notices to stderr."""
     cmd = [hark_bin, "-i", str(wav), "-t", "-", "--speakers", "--speaker-mode", "acoustic",
            "--transcript-format", "json", "--engine", engine]
-    run = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=postprocess.TOOL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"{hark_bin} ran {postprocess.TOOL_TIMEOUT:.0f} s without finishing and was killed")
     if run.stderr.strip():
         print(run.stderr.rstrip(), file=sys.stderr)
     if run.returncode != 0:

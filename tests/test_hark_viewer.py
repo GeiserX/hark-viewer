@@ -197,6 +197,18 @@ class Job(unittest.TestCase):
         self.assertEqual([e["start"] for e in postprocess.read_lines(folder / "transcript.final.json")], [1.0, 21.0, 36.0, 41.0])
         self.assertEqual(len(self.calls("hark")), 8)
 
+    def test_a_hark_that_never_finishes_is_killed_and_fails_the_step(self):
+        """Not one subprocess used to carry a timeout, so a hung hark, mw or ffmpeg pinned the job
+        and read_status went on reporting `running` for ever, because the pid was still alive."""
+        folder = make_call(self.tmp, [(0, [])])
+        self.real_audio(folder, 5)
+        run = self.run_job(folder, FAKE_HARK_SLEEP="20", HARK_VIEWER_TOOL_TIMEOUT="0.5", HARK_VIEWER_MW="off")
+        self.assertEqual(run.returncode, 1)
+        step = json.loads((folder / "postprocess.json").read_text())["steps"]["final"]
+        self.assertEqual(step["state"], "failed")
+        self.assertIn("without finishing and was killed", step["error"])
+        self.assertFalse((folder / "transcript.final.json").exists())
+
     def test_a_hark_that_refuses_everything_fails_the_step_and_writes_no_transcript(self):
         folder = make_call(self.tmp, [(0, [])])
         self.real_audio(folder, 50)

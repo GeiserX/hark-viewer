@@ -29,6 +29,7 @@ HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 LIVE = ("recording", "paused")
+PROBE_WAIT = 10                                             # lsof and ps answer at once or not at all
 STALE = 3600                                                # a call not written to for this long is not restarted unasked
 STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
 # hark answers a start only once the capture is really running, and opening a cold recognizer
@@ -139,10 +140,19 @@ def status():
 
 def relaunch_agent():
     """Kill whatever listens on hark's port and start a fresh agent. The only way out of a wedged capture."""
-    run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"], capture_output=True, text=True)
+    try:
+        run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=PROBE_WAIT)
+    except subprocess.TimeoutExpired:
+        print(f"relaunch: lsof did not answer in {PROBE_WAIT} s, leaving hark's port alone", file=sys.stderr, flush=True)
+        return ensure_agent()
     for pid in run.stdout.split():
         # Only hark's agent. Something else may listen on the same port of another address, an ssh -L or a VM forward.
-        command = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout.strip()
+        try:
+            command = subprocess.run(["ps", "-o", "command=", "-p", pid],
+                                     capture_output=True, text=True, timeout=PROBE_WAIT).stdout.strip()
+        except subprocess.TimeoutExpired:
+            command = ""                                    # unnamed, so not provably hark's agent: left alone below
         if "--remote-control" not in command:
             print(f"relaunch: left pid {pid} alone, it is not a hark agent: {command}", file=sys.stderr, flush=True)
             continue

@@ -629,7 +629,7 @@ class Patience(unittest.TestCase):
                 + server.STOP_WAIT + server.START_TIMEOUT + server.HARK_CALL
                 + 2 * server.PROBE_WAIT + server.DIE_WAIT + server.HARK_CALL + server.AGENT_WAIT
                 + server.START_TIMEOUT + server.HARK_CALL               # the start after the relaunch
-                + server.HARK_CALL)                                     # recording_anyway
+                + server.DISOWNED_WAIT + server.HARK_CALL)              # recording_anyway
 
     def test_patience_is_not_shorter_than_the_longest_start(self):
         self.assertGreaterEqual(server.PATIENCE, self.chain())
@@ -642,7 +642,8 @@ class Patience(unittest.TestCase):
 
     def test_every_wait_in_the_chain_is_counted(self):
         # Each of these is a real timeout on the path, so raising any one must raise patience.
-        for name in ("AGENT_WAIT", "STOP_WAIT", "START_TIMEOUT", "DIE_WAIT", "PROBE_WAIT", "HARK_CALL"):
+        for name in ("AGENT_WAIT", "STOP_WAIT", "START_TIMEOUT", "DIE_WAIT", "PROBE_WAIT", "HARK_CALL",
+                     "DISOWNED_WAIT"):
             was = getattr(server, name)
             try:
                 setattr(server, name, was + 100)
@@ -1019,14 +1020,35 @@ class SlowStart(ServerCase):
 
 
 class ImpatientStart(ServerCase):
-    """The control for the above: with a timeout under the start's own time, the page reports a
-    failure for a recording that did begin. That is what the old fixed 10 s timeout would do."""
-    EXTRA_ENV = {"FAKE_START_DELAY": "1.5", "HARK_VIEWER_START_TIMEOUT": "0.4"}
+    """The control for the above: with a timeout under the start's own time, and no window in which
+    to notice the capture opening, the page reports a failure for a recording that did begin. That
+    is what the old fixed 10 s timeout would do."""
+    EXTRA_ENV = {"FAKE_START_DELAY": "1.5", "HARK_VIEWER_START_TIMEOUT": "0.4",
+                 "HARK_VIEWER_DISOWNED_WAIT": "0"}
 
     def test_a_timeout_shorter_than_the_start_reports_a_failure(self):
         code, answer = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
         self.assertEqual(code, 502, answer)
         self.assertIn("unreachable", str(answer))
+
+
+class ImpatientStartFound(ServerCase):
+    """A start this side gave up on can still be opening its capture, which is not in /status yet.
+    One look called that a failure. If hark had written nothing the folder went and the start then
+    failed against a deleted directory; if it had, the folder was left recording with no meta.json
+    and `current` still on the previous call, so the workspace and the title were lost and
+    `relabel current` or `finalize current` aimed at the wrong call."""
+    EXTRA_ENV = {"FAKE_START_DELAY": "1.5", "HARK_VIEWER_START_TIMEOUT": "0.4",
+                 "HARK_VIEWER_DISOWNED_WAIT": "8"}
+
+    def test_a_start_this_side_gave_up_on_is_found_and_kept(self):
+        code, made = self.api("/api/new", "POST", {"workspace": "work", "title": "late"})
+        self.assertEqual(code, 200, made)
+        folder = Path(made["folder"])
+        self.assertEqual(json.loads((folder / "meta.json").read_text())["title"], "late")
+        self.assertEqual((self.tmp / "current").resolve(), folder.resolve())
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        self.assertEqual(self.api("/api/status")[1]["call"], made["call"])
 
 
 class CutOffStart(ServerCase):

@@ -40,6 +40,8 @@ STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a 
 START_TIMEOUT = float(os.environ.get("HARK_VIEWER_START_TIMEOUT", "90"))
 AGENT_WAIT = float(os.environ.get("HARK_VIEWER_AGENT_WAIT", "30"))  # how long a freshly started hark agent gets to answer /status
 DIE_WAIT = float(os.environ.get("HARK_VIEWER_DIE_WAIT", "10"))      # how long a killed agent gets to let go of hark's port
+# How long a start this side gave up on is watched for, in case hark is still opening its capture.
+DISOWNED_WAIT = float(os.environ.get("HARK_VIEWER_DISOWNED_WAIT", "2"))
 # The longest one /api/new or /api/restart can take, added up over the chain rather than
 # estimated. /api/status reports this number and the launcher makes it its own --max-time, so a
 # client must never give up before the server does: the earlier number left out both probes, the
@@ -51,7 +53,7 @@ PATIENCE = round(
     + STOP_WAIT + START_TIMEOUT + HARK_CALL                 # waiting out a capture, and the start that wait ends on
     + 2 * PROBE_WAIT + DIE_WAIT + HARK_CALL + AGENT_WAIT    # relaunch_agent: lsof, one ps, the drain, a fresh agent
     + START_TIMEOUT + HARK_CALL                             # the start after the relaunch
-    + HARK_CALL                                             # recording_anyway asking what hark is really doing
+    + DISOWNED_WAIT + HARK_CALL                             # recording_anyway watching what hark is really doing
     + 5)
 WATCH_EVERY = float(os.environ.get("HARK_VIEWER_WATCH", "2"))   # seconds between looks at hark for a call that ended
 # An ending other than a stop is where Restart records on into the same call, and the accurate
@@ -272,18 +274,28 @@ def recording_anyway(folder, audio, code, answer):
     """hark's session recording into `audio`, when its start answered badly, else None.
 
     hark's HTTP server cuts a handler off at its ceiling and answers 500 in its place, and a
-    client timeout looks the same from here; the capture is never told, so it runs on. A cold
+    client timeout looks the same from here. The capture is never told, so it runs on. A cold
     start that answered at 22.8 s was called a failure this way while hark recorded. What hark
     is doing counts, not what its start said.
+
+    It is asked for a couple of seconds, not once. A start this side gave up on can still be
+    opening its capture, which is not in /status yet, and one look then called it a failure: the
+    folder was removed if hark had written nothing, and left with no meta.json and `current` still
+    on the previous call if hark had. The transcript survived that, the workspace and the title did
+    not, and `relabel current` or `finalize current` aimed at the wrong call.
     """
-    st_code, st = hark("GET", "/status")
-    session = (st.get("session") or {}) if st_code == 200 else {}
-    if live(session) and Path(session.get("audio") or "").resolve() == Path(audio).resolve():
-        print(f"start: hark answered the start with {code} {answer}, and is recording "
-              f"{folder.name}/{Path(audio).name}; carrying on", file=sys.stderr, flush=True)
-        return session
-    print(f"start: start failed with {code} {answer}", file=sys.stderr, flush=True)
-    return None
+    end = time.time() + DISOWNED_WAIT
+    while True:
+        st_code, st = hark("GET", "/status")
+        session = (st.get("session") or {}) if st_code == 200 else {}
+        if live(session) and Path(session.get("audio") or "").resolve() == Path(audio).resolve():
+            print(f"start: hark answered the start with {code} {answer}, and is recording "
+                  f"{folder.name}/{Path(audio).name}; carrying on", file=sys.stderr, flush=True)
+            return session
+        if time.time() >= end:
+            print(f"start: start failed with {code} {answer}", file=sys.stderr, flush=True)
+            return None
+        time.sleep(0.2)
 
 
 def new_call(workspace, title):

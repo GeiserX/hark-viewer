@@ -59,8 +59,14 @@ def line(start, end, speaker, text):
 def real_audio(case, folder, seconds):
     """A real stereo Opus file, for anything that runs ffprobe or ffmpeg over a recording."""
     case.assertTrue(shutil.which("ffmpeg") and shutil.which("ffprobe"), "this test needs ffmpeg and ffprobe")
-    made = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                           "-t", str(seconds), "-c:a", "libopus", str(folder / "audio.opus")], capture_output=True, text=True)
+    try:
+        # The deadline every other subprocess call in the repo now carries. Without it an ffmpeg
+        # that never returns hangs the documented local test command with nothing to look at.
+        made = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                               "-t", str(seconds), "-c:a", "libopus", str(folder / "audio.opus")],
+                              capture_output=True, text=True, timeout=postprocess.PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired as slow:
+        case.fail(f"ffmpeg did not finish in {postprocess.PROBE_TIMEOUT} s: {slow}")
     case.assertEqual(made.returncode, 0, made.stderr)
 
 
@@ -630,7 +636,9 @@ class ServerCase(unittest.TestCase):
             self.proc.terminate()
             self.proc.wait()
         else:
-            self.fail(f"server.py would not listen, see {self.tmp / '.server.log'}")
+            # Both logs, because the temp dir is gone by the time anyone reads a CI failure, and
+            # server.py not answering is usually the agent it waits for, whose reason is its own log.
+            self.fail(f"server.py would not listen.\nserver: {self.logs('.server.log')}\nagent: {self.logs('.hark-agent.log')}")
         self.addCleanup(self.kill_agent)
         self.addCleanup(self.proc.wait)
         self.addCleanup(self.proc.terminate)
@@ -641,10 +649,17 @@ class ServerCase(unittest.TestCase):
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_VIEWER_PORT": str(self.port),
                  "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
                  "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
+                 # Shorter than came_up, or a server still waiting for its agent reads as a server
+                 # that would not listen, and every retry spends the whole wait again.
+                 "HARK_VIEWER_AGENT_WAIT": "10",
                  "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log),
                  **self.EXTRA_ENV})
 
-    def came_up(self, seconds=20):
+    def logs(self, name):
+        log = self.tmp / name
+        return log.read_text(errors="replace")[-3000:] if log.exists() else f"no {name}"
+
+    def came_up(self, seconds=40):
         end = time.time() + seconds
         while time.time() < end:
             if self.proc.poll() is not None:
@@ -930,6 +945,23 @@ class CutOffStart(ServerCase):
         self.assertEqual([p["audio"] for p in postprocess.parts_of(folder)], ["audio.opus", "audio.part2.opus"])
         self.assertTrue((folder / "audio.part2.opus").is_file())
         self.assertTrue(self.api("/api/status")[1]["active"])
+
+
+class NoHark(ServerCase):
+    """The page server has to come up when hark is not installed, because saying so is the page's
+    job. A HARK_BIN that is not there raised out of ensure_agent, and at boot that killed the
+    server before it bound: a page that could not load, for a missing binary."""
+    EXTRA_ENV = {"HARK_BIN": "/nonexistent/hark", "HARK_VIEWER_AGENT_WAIT": "1"}
+
+    def test_the_page_server_comes_up_with_no_agent_and_says_hark_is_missing(self):
+        code, st = self.api("/api/status")
+        self.assertEqual(code, 200, st)
+        self.assertFalse(st["agent"])
+        self.assertFalse(st["active"])
+        code, body = self.api("/api/new", "POST", {"workspace": "work", "title": ""})
+        self.assertEqual(code, 502, body)
+        self.assertIn("is hark installed?", body["error"])
+        self.assertIn("cannot start /nonexistent/hark", (self.tmp / ".server.log").read_text())
 
 
 class DeathlessAgent(ServerCase):

@@ -114,9 +114,16 @@ def ensure_agent():
     if agent is None or agent.poll() is not None:
         # A hark slower than AGENT_WAIT used to get a second Popen from the next call, so two
         # agents raced for the port and one became an orphan `quit` might or might not match.
-        with open(ROOT / ".hark-agent.log", "ab") as log:   # closed: the old open() leaked one per call
-            agent = subprocess.Popen([HARK_BIN, "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
-                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        try:
+            with open(ROOT / ".hark-agent.log", "ab") as log:   # closed: the old open() leaked one per call
+                agent = subprocess.Popen([HARK_BIN, "--remote-control", str(HARK_PORT), "-C", str(ROOT), "--keep-awake"],
+                                         stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        except OSError as e:
+            # A HARK_BIN that is not there, or is not executable. This raised out of a request
+            # thread, and at boot it killed the page server before it bound, so the page could not
+            # even come up to say hark was missing.
+            print(f"agent: cannot start {HARK_BIN}: {e}", file=sys.stderr, flush=True)
+            return False
     end = time.time() + AGENT_WAIT
     while time.time() < end:
         time.sleep(0.2)

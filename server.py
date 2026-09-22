@@ -411,6 +411,30 @@ def finalize(call):
     threading.Thread(target=job.wait, daemon=True).start()  # reaped, or a killed job stays a zombie that reads as running
 
 
+def reconcile():
+    """The accurate transcript for a call that ended while this server was not running.
+
+    The watcher only knows the calls it saw recording, so an ending it was not alive for left the
+    call with the live transcript alone and nothing saying so, and only `hark-viewer finalize`
+    recovered it. A call hark still holds is left to the watcher, which is what the grace before
+    an ending other than a stop is for.
+    """
+    link = ROOT / "current"
+    if not link.is_symlink():
+        return
+    call = call_of({"transcript": str(link / "transcript.json")})
+    if not call or not (ROOT / call).is_dir() or (ROOT / call / postprocess.STATUS).exists():
+        return
+    code, st = status()
+    if st["call"] == call and ((st["session"] or {}).get("state") in LIVE or st["active"]):
+        return                                              # hark is still on it: the watcher's business
+    if not any((ROOT / call / part["audio"]).is_file() for part in postprocess.parts_of(ROOT / call)):
+        return                                              # a folder nothing was ever recorded into
+    print(f"boot: {call} ended while no server was running; writing its accurate transcript",
+          file=sys.stderr, flush=True)
+    finalize(call)
+
+
 def watch():
     """Notice the end of a call however it ended.
 
@@ -545,6 +569,7 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     ROOT.mkdir(parents=True, exist_ok=True)
     ensure_agent()
+    reconcile()
     threading.Thread(target=watch, daemon=True).start()
     try:
         ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

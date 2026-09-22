@@ -32,7 +32,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-S = {"session": None, "finish": float(os.environ.get("FAKE_FINISH", "0")), "wedged": False, "writing_until": 0.0,
+# FAKE_SESSION is a session it already has when it starts, which is a hark that was recording
+# before the page server came up: a server restart mid-call leaves exactly that.
+S = {"session": json.loads(os.environ["FAKE_SESSION"]) if os.environ.get("FAKE_SESSION") else None,
+     "finish": float(os.environ.get("FAKE_FINISH", "0")), "wedged": False, "writing_until": 0.0,
      "stop_timeout": float(os.environ.get("FAKE_STOP_TIMEOUT", "10")),
      "capturing": os.environ.get("FAKE_CAPTURING", "1") not in ("0", "false", "no"),
      "stop_answer": int(os.environ.get("FAKE_STOP_ANSWER", "0")), "refuse_start": False}

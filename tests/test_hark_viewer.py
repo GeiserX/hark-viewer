@@ -661,6 +661,7 @@ class ServerCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.addCleanup(self.keep_logs)                  # cleanups run last in first out: before the delete
         self.log = self.tmp / "calls.log"
+        self.seed()
         self.server_log = open(self.tmp / ".server.log", "ab")
         self.addCleanup(self.server_log.close)
         # free_port() lets the port go before server.py binds it, so on a busy box something else
@@ -713,6 +714,9 @@ class ServerCase(unittest.TestCase):
         except (OSError, subprocess.TimeoutExpired) as e:
             return [f"lsof: {e}"]
         return run.stdout.split()
+
+    def seed(self):
+        """Anything ROOT has to hold before the server starts."""
 
     def spawn(self):
         return subprocess.Popen(
@@ -1196,6 +1200,45 @@ class NotCapturing(ServerCase):
         self.fake(capturing=True)                                 # hark's capture works again
         made, folder = self.new()
         self.assertTrue(self.api("/api/status")[1]["active"])
+
+class EndedWhileNoServerRan(ServerCase):
+    """The watcher only knows the calls it saw recording, so an ending it was not alive for left the
+    call with its live transcript alone and nothing saying so. A server restart between the ending
+    and the next call lost the accurate pass for good, which is part of what the ended-any-way work
+    set out to fix, and only `hark-viewer finalize` recovered it by hand."""
+
+    def seed(self):
+        self.was = make_call(self.tmp, [(0, [line(1.0, 2.0, "Others", "said before the server died")])])
+        (self.tmp / "current").symlink_to(self.was)
+
+    def test_a_call_that_ended_with_no_server_running_gets_its_transcript_at_boot(self):
+        self.wait_for(lambda: (postprocess.read_status(self.was) or {}).get("state") == "done",
+                      "the transcript of the call that ended while nothing was watching")
+        self.assertIn("ended while no server was running", (self.tmp / ".server.log").read_text())
+
+    def test_the_call_is_still_the_one_the_page_shows(self):
+        self.assertEqual(self.api("/api/status")[1]["call"], "work/2026-09-21_170000")
+
+
+class StillRecordingAtBoot(ServerCase):
+    """The mirror of the above: a call hark is still recording when the server comes up must be left
+    to the watcher, not finalised out from under it."""
+
+    def seed(self):
+        self.was = make_call(self.tmp, [(0, [line(1.0, 2.0, "Others", "still going")])])
+        (self.tmp / "current").symlink_to(self.was)
+        # The agent is already recording it when the server comes up, which is what a server
+        # restart in the middle of a call leaves behind.
+        self.EXTRA_ENV = {"FAKE_SESSION": json.dumps(
+            {"state": "recording", "elapsed": 1, "muted": False, "id": "X", "capturing": True,
+             "audio": str(self.was / "audio.opus"), "transcript": str(self.was / "transcript.json")})}
+
+    def test_a_call_hark_still_holds_is_left_alone(self):
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        time.sleep(1)                                        # many watcher ticks
+        self.assertIsNone(postprocess.read_status(self.was))
+        self.assertNotIn("ended while no server was running", (self.tmp / ".server.log").read_text())
+
 
 class SlowWatcher(ServerCase):
     WATCH = "60"

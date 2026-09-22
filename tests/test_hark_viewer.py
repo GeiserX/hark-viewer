@@ -659,6 +659,35 @@ class Relaunch(unittest.TestCase):
         threading.Thread(target=serve, daemon=True).start()
         return sock.getsockname()[1]
 
+    def slow_lsof(self, tmp):
+        """An lsof that never answers, so the relaunch cannot tell what holds the port."""
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "lsof").write_text("#!/bin/sh\nsleep 30\n")
+        (bin_dir / "lsof").chmod(0o755)
+        return f"{bin_dir}:{os.environ['PATH']}"
+
+    def test_an_lsof_that_does_not_answer_is_reported_rather_than_called_a_relaunch(self):
+        """With no lsof there is no way to know which process to signal, so nothing is replaced. It
+        used to ask ensure_agent, which found the old agent still answering and called that success,
+        and the start that followed went back to the very capture the relaunch was escaping."""
+        tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        port = free_port()
+        agent = subprocess.Popen([sys.executable, str(HERE / "fake_agent.py"), "--remote-control", str(port)],
+                                 env={**os.environ, "FAKE_LOG": str(tmp / "calls.log")})
+        self.addCleanup(agent.wait)
+        self.addCleanup(agent.kill)
+        run = subprocess.run(
+            [sys.executable, "-c", "import server; print(server.relaunch_agent() or 'none')"],
+            cwd=str(REPO), capture_output=True, text=True, timeout=180,
+            env={**os.environ, "HARK_REMOTE_CONTROL_PORT": str(port), "HARK_VIEWER_ROOT": str(tmp),
+                 "PATH": self.slow_lsof(tmp), "HARK_VIEWER_PROBE_WAIT": "1", "HARK_VIEWER_AGENT_WAIT": "2"})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("lsof did not answer", run.stdout)
+        self.assertNotEqual(run.stdout.strip(), "none", "a relaunch that replaced nothing reported success")
+        self.assertIsNone(agent.poll(), "the agent was killed without being identified")
+
     def test_a_listener_that_is_not_hark_is_reported_and_no_hark_is_started(self):
         tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
         self.addCleanup(shutil.rmtree, tmp, True)

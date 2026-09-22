@@ -31,7 +31,7 @@ HARK_URL = f"http://127.0.0.1:{HARK_PORT}"
 HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 CONTROLS = {"pause", "resume", "mute", "unmute", "stop"}
 LIVE = ("recording", "paused")
-PROBE_WAIT = 10                                             # lsof and ps answer at once or not at all
+PROBE_WAIT = float(os.environ.get("HARK_VIEWER_PROBE_WAIT", "10"))   # lsof and ps answer at once or not at all
 HARK_CALL = 10                                              # every call to hark's agent that is not a start
 STALE = 3600                                                # a call not written to for this long is not restarted unasked
 STOP_WAIT = float(os.environ.get("HARK_VIEWER_STOP_WAIT", "15"))   # how long a start waits out a capture that is still finishing
@@ -227,8 +227,12 @@ def relaunch_agent():
         run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{HARK_PORT}", "-sTCP:LISTEN"],
                              capture_output=True, text=True, timeout=PROBE_WAIT)
     except subprocess.TimeoutExpired:
+        # Nothing was replaced, and the old agent is very likely still the one answering, so calling
+        # ensure_agent here reported success and sent the next start back to the wedged capture.
+        # Without lsof there is no way to know which process to signal, so say that.
         print(f"relaunch: lsof did not answer in {PROBE_WAIT} s, leaving hark's port alone", file=sys.stderr, flush=True)
-        return None if ensure_agent() else WEDGED
+        return (f"lsof did not answer in {PROBE_WAIT} s, so nothing on hark's port {HARK_PORT} could be "
+                "identified and the agent was left as it is")
     foreign, killed = [], []
     for pid in run.stdout.split():
         # Only hark's agent. Something else may listen on the same port of another address, an ssh -L or a VM forward.

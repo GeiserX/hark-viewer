@@ -219,6 +219,7 @@ Timing, all in seconds. The defaults are what a real call needs, and nothing her
 | `HARK_VIEWER_AGENT_WAIT` | `30` | How long a freshly started hark agent gets to answer |
 | `HARK_VIEWER_DIE_WAIT` | `10` | How long a killed agent gets to let go of hark's port. Past it the relaunch fails rather than handing the same agent back |
 | `HARK_VIEWER_DISOWNED_WAIT` | `2` | How long a start this side gave up on is watched for, in case hark is still opening its capture |
+| `HARK_VIEWER_PROBE_WAIT` | `10` | How long `lsof` and `ps` get while a relaunch works out what holds hark's port |
 | `HARK_VIEWER_ENDED_GRACE` | `60` | How long an ending other than a stop is left for a Restart before the accurate transcript is written |
 | `HARK_VIEWER_WATCH` | `2` | Between looks at hark for a call that ended |
 | `HARK_VIEWER_SETTLE` | `5` | A recording unchanged for this long is finished, so the offline passes may read it |

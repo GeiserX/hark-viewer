@@ -395,6 +395,50 @@ def free_port():
         return s.getsockname()[1]
 
 
+class HarkClient(unittest.TestCase):
+    """What hark() makes of something that is not hark's agent holding hark's port."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def listener(self, reply):
+        """A socket that answers one request with these exact bytes, whatever was asked."""
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+        self.addCleanup(sock.close)
+
+        def serve():
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(4096)
+                conn.sendall(reply)
+        threading.Thread(target=serve, daemon=True).start()
+        return sock.getsockname()[1]
+
+    def ask(self, port):
+        run = subprocess.run(
+            [sys.executable, "-c", "import json, server; print(json.dumps(server.hark('GET', '/status')))"],
+            cwd=str(REPO), capture_output=True, text=True,
+            env={**os.environ, "HARK_REMOTE_CONTROL_PORT": str(port), "HARK_VIEWER_ROOT": str(self.tmp)})
+        self.assertEqual(run.returncode, 0, run.stderr)      # it used to raise, and at boot that killed the server
+        return json.loads(run.stdout)
+
+    def test_a_listener_answering_http_but_not_json_is_reported(self):
+        code, body = self.ask(self.listener(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nnot json"))
+        self.assertEqual(code, 502)
+        self.assertIn("is not hark", body["error"])
+
+    def test_a_listener_that_does_not_speak_http_is_reported(self):
+        code, body = self.ask(self.listener(b"SSH-2.0-OpenSSH_9.8\r\n"))
+        self.assertEqual(code, 502)
+        self.assertIn("is not hark", body["error"])
+
+
 class ServerCase(unittest.TestCase):
     """server.py on spare ports. It starts the fake agent itself, the way it starts hark."""
     WATCH = "0.1"

@@ -5,6 +5,7 @@ Serves the live transcript page and the call folders, and forwards /api/* to
 hark's remote-control agent (which sends no CORS headers, so the page cannot
 call it directly). Starts that agent if it is not running. Loopback only.
 """
+import http.client
 import json
 import os
 import re
@@ -80,6 +81,12 @@ def hark(method, path, body=None, timeout=10):
             return e.code, {"error": raw.decode(errors="replace")}
     except OSError as e:
         return 502, {"error": f"hark agent unreachable: {e}"}
+    except (ValueError, http.client.HTTPException) as e:
+        # Something that is not hark's agent holds its port: an ssh -L, a VM forward, another
+        # dev server. It answers, just not JSON over HTTP. JSONDecodeError is a ValueError and
+        # BadStatusLine an HTTPException, so neither was caught: this killed ensure_agent at
+        # boot before the page server ever bound, and dropped every poll if it turned up mid-call.
+        return 502, {"error": f"whatever answers on hark's port {HARK_PORT} is not hark: {type(e).__name__}: {e}"}
 
 
 def ensure_agent():

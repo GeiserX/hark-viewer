@@ -22,18 +22,15 @@ reviews:
     - "!**/.next/**"
     - "!**/package-lock.json"
     - "!**/pnpm-lock.yaml"
+  # Only the linters this repository has something for: Python, zsh, YAML, Markdown and secrets.
   tools:
     gitleaks:
-      enabled: true
-    hadolint:
       enabled: true
     actionlint:
       enabled: true
     yamllint:
       enabled: true
     markdownlint:
-      enabled: true
-    eslint:
       enabled: true
     shellcheck:
       enabled: true
@@ -46,6 +43,3 @@ knowledge_base:
     scope: "local"
   code_guidelines:
     enabled: true
-    filePatterns:
-      - "AGENTS.md"
-      - "CLAUDE.md"

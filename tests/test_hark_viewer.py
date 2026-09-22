@@ -337,6 +337,7 @@ class Job(unittest.TestCase):
                 seen.add(bool((folder / "postprocess.json").read_text().strip()))
             except OSError:
                 pass
+            time.sleep(0.005)       # not a bare busy loop: on one core it starved its own four jobs
         self.assertEqual(seen, {True})
         self.assertEqual(len(self.calls("hark")), 1)
         self.assertEqual([p.name for p in folder.glob("postprocess.json.*")], [])
@@ -396,7 +397,10 @@ class Languages(unittest.TestCase):
         self.assertEqual(got["present"], ["en"])
         self.assertFalse(got["mixed"])                                   # 1 of 11 is under a tenth
         self.assertEqual(got["other_lines"], 1)                          # the Spanish line is still reported
-        self.assertAlmostEqual(sum(got["shares"].values()), 10 / 11, places=2)   # the unnamed line is in no share
+        # The unreadable line is in no share, so they cannot total 1, and every other line was
+        # named. An exact figure here would be a real recognizer score, and would move with macOS.
+        self.assertLess(sum(got["shares"].values()), 1.0)
+        self.assertGreater(sum(got["shares"].values()), 0.8)
 
     def test_a_line_too_short_to_judge_is_left_out(self):
         got = self.verdict(["Mm-hmm.", "Cool.", "All right."] + EN)
@@ -605,31 +609,56 @@ class ServerCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.log = self.tmp / "calls.log"
-        self.port, self.agent_port = free_port(), free_port()
-        self.assertFalse({self.port, self.agent_port} & {8473, 8474})
-        self.proc = subprocess.Popen(
-            [sys.executable, str(REPO / "server.py")], stderr=open(self.tmp / ".server.log", "ab"),
+        self.server_log = open(self.tmp / ".server.log", "ab")
+        self.addCleanup(self.server_log.close)
+        # free_port() lets the port go before server.py binds it, so on a busy box something else
+        # can take it in between. A server that could not listen is retried on another pair.
+        for _ in range(5):
+            self.port, self.agent_port = free_port(), free_port()
+            self.assertFalse({self.port, self.agent_port} & {8473, 8474})
+            self.proc = self.spawn()
+            if self.came_up():
+                break
+            self.proc.terminate()
+            self.proc.wait()
+        else:
+            self.fail(f"server.py would not listen, see {self.tmp / '.server.log'}")
+        self.addCleanup(self.kill_agent)
+        self.addCleanup(self.proc.wait)
+        self.addCleanup(self.proc.terminate)
+
+    def spawn(self):
+        return subprocess.Popen(
+            [sys.executable, str(REPO / "server.py")], stderr=self.server_log,
             env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp), "HARK_VIEWER_PORT": str(self.port),
                  "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
                  "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
                  "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log),
                  **self.EXTRA_ENV})
-        self.addCleanup(self.kill_agent)
-        self.addCleanup(self.proc.wait)
-        self.addCleanup(self.proc.terminate)
-        self.wait_for(lambda: self.get("/api/status")[0] == 200, "the server to answer")
+
+    def came_up(self, seconds=20):
+        end = time.time() + seconds
+        while time.time() < end:
+            if self.proc.poll() is not None:
+                return False                     # it could not listen, and .server.log says why
+            # A short timeout: on a port collision whatever holds it may accept and never answer,
+            # and the default 60 would then be spent before the retry.
+            if self.get("/api/status", timeout=5)[0] == 200:
+                return True
+            time.sleep(0.05)
+        return False
 
     def kill_agent(self):
         run = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{self.agent_port}", "-sTCP:LISTEN"], capture_output=True, text=True)
         for pid in run.stdout.split():
             os.kill(int(pid), 9)
 
-    def get(self, path, method="GET", body=None, port=None):
+    def get(self, path, method="GET", body=None, port=None, timeout=60):
         req = urllib.request.Request(f"http://127.0.0.1:{port or self.port}{path}", method=method,
                                      data=json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None),
                                      headers={"X-Hark-Viewer": "1"})
         try:
-            with opener.open(req, timeout=60) as r:
+            with opener.open(req, timeout=timeout) as r:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
@@ -651,7 +680,8 @@ class ServerCase(unittest.TestCase):
         return [(l.split(" ", 3)[2], json.loads(l.split(" ", 3)[3])) for l in lines if not l.endswith(" launched")]
 
     def launches(self):
-        return [l.split()[1] for l in self.log.read_text().splitlines() if l.endswith(" launched")]
+        lines = self.log.read_text().splitlines() if self.log.exists() else []
+        return [l.split()[1] for l in lines if l.endswith(" launched")]
 
     def wait_for(self, test, what, seconds=20):
         end = time.time() + seconds
@@ -678,8 +708,9 @@ class Server(ServerCase):
             self.assertEqual(st["session"]["callAudio"], report)
 
     def test_restart_records_on_into_the_same_folder_and_does_not_end_the_call(self):
-        # hark as it is: `stopped` at once, the capture finishing for 5 s behind it, /start refused meanwhile.
-        self.fake(finish=5)
+        # hark as it is: `stopped` at once, the capture finishing behind it, /start refused meanwhile.
+        # Well inside HARK_VIEWER_STOP_WAIT, or CPU contention alone relaunches the agent.
+        self.fake(finish=3)
         made, folder = self.new("sync")
         first = json.loads((folder / "meta.json").read_text())["started"]
 

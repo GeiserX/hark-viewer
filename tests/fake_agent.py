@@ -6,9 +6,12 @@ seconds after that, /status does not show it, and until it is over /start answer
 "still finishing". With `wedged` set it never is over, and after FAKE_STOP_TIMEOUT the
 session reads `failed`, as hark's own watchdog does it. Only a new agent gets out of that.
 
-`capturing` is true unless FAKE_CAPTURING says otherwise, and it rides on both the start's
-answer and every session: hark gives up waiting for its own capture at 60 s and then says
-`recording` with `capturing: false`, which is a start that recorded nothing.
+`capturing` belongs to the session, the way hark's does: a start stamps the session with
+whatever `capturing` is then, and /status reports the session's own value. So
+`{"capturing": false}` decides what the next start records, and
+`{"session": {"capturing": false}}` disowns the capture behind the session that is already
+running without touching the next one. hark gives up waiting for its own capture at 60 s and
+then says `recording` with `capturing: false`, which is a start that recorded nothing.
 
 `stop_answer` makes /stop answer that code and change nothing, which is hark refusing to stop,
 and `refuse_start` makes /start answer 500 and start nothing.
@@ -60,8 +63,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
-        session = S["session"] and {**S["session"], "capturing": S["capturing"]}
-        self.answer(200, {"session": session})
+        self.answer(200, {"session": S["session"]})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -84,7 +86,7 @@ class H(BaseHTTPRequestHandler):
                                                   "check GET /status and restart the agent if it stays wedged"})
             Path(body["audio"]).write_bytes(b"audio")
             S["session"] = {"state": "recording", "elapsed": 0, "muted": False, "id": "X",
-                            "audio": body["audio"], "transcript": body["transcript"]}
+                            "capturing": S["capturing"], "audio": body["audio"], "transcript": body["transcript"]}
             if os.environ.get("FAKE_START_ANSWER"):   # hark's HTTP server cut the handler off: a 500 for a capture that runs on
                 return self.answer(int(os.environ["FAKE_START_ANSWER"]), {})
             return self.answer(201, {"id": "X", "capturing": S["capturing"]})

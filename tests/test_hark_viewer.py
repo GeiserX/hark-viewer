@@ -887,12 +887,29 @@ class Server(ServerCase):
         self.assertEqual(self.api("/api/restart", "POST")[0], 409)
         self.assertFalse((folder / "audio.part2.opus").exists())
 
+    def test_restart_recovers_a_capture_hark_has_disowned(self):
+        """The stop was gated on the server's own reading of the capture, which goes false the moment
+        hark says `capturing: false`, so Restart skipped it. hark still held the session, the start
+        met its "already active", and the answer was "the call is stopped and part 2 did not start".
+        The call was not stopped, and Restart was the only control the page offered."""
+        made, folder = self.new()
+        self.fake(session={"capturing": False})                  # hark gives up on the capture, keeps the session
+        st = self.api("/api/status")[1]
+        self.assertFalse(st["active"])                           # the page shows the red banner
+        self.assertEqual(st["session"]["state"], "recording")    # while hark still holds the session
+        before = len(self.seen())
+        code, again = self.api("/api/restart", "POST")
+        self.assertEqual((code, again.get("part")), (200, 2), again)
+        self.assertEqual([p for p, _ in self.seen()][before], "/stop")
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        self.assertEqual([p["audio"] for p in postprocess.parts_of(folder)], ["audio.opus", "audio.part2.opus"])
+
     def test_a_capture_hark_says_is_not_running_is_not_an_active_call(self):
         """hark keeps calling the session `recording` and sets `capturing: false`. Reading the state
         alone left a pulsing REC dot and an elapsed clock over a capture hark knew was not there."""
         made, folder = self.new()
         self.assertTrue(self.api("/api/status")[1]["active"])
-        self.fake(capturing=False)
+        self.fake(session={"capturing": False})             # hark disowns the capture behind this session
         st = self.api("/api/status")[1]
         self.assertFalse(st["active"])
         self.assertIs(st["session"]["capturing"], False)     # and the page gets the field to say so with
@@ -1084,27 +1101,6 @@ class NotCapturing(ServerCase):
         self.fake(capturing=True)                                 # hark's capture works again
         made, folder = self.new()
         self.assertTrue(self.api("/api/status")[1]["active"])
-
-    def test_restart_stops_a_capture_hark_has_disowned_instead_of_reporting_a_stop_it_skipped(self):
-        """The stop was gated on the server's own reading of the capture, which is false the moment
-        hark says `capturing: false`, so Restart skipped it, the start met hark's "already active",
-        and the answer was "the call is stopped and part 2 did not start". The call was not
-        stopped. Restart was the only control the page offered, and it could not recover."""
-        self.fake(capturing=True)
-        made, folder = self.new()
-        self.fake(capturing=False)                                # hark gives up on its own capture
-        st = self.api("/api/status")[1]
-        self.assertFalse(st["active"])                            # the page shows the red banner
-        self.assertEqual(st["session"]["state"], "recording")     # while hark still holds the session
-        code, again = self.api("/api/restart", "POST")
-        self.assertIn("/stop", [p for p, _ in self.seen()])
-        self.assertNotIn("the call is stopped", str(again))
-        self.assertIn("not capturing", again["error"])             # the true reason, and hark is free again
-        self.assertEqual(len(postprocess.parts_of(folder)), 1)     # the part that never started is out
-        self.fake(capturing=True)
-        code, again = self.api("/api/restart", "POST")
-        self.assertEqual((code, again.get("part")), (200, 2), again)
-
 
 class SlowWatcher(ServerCase):
     WATCH = "60"

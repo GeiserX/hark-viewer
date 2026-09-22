@@ -790,8 +790,10 @@ class ServerCase(unittest.TestCase):
                  "HARK_REMOTE_CONTROL_PORT": str(self.agent_port), "HARK_VIEWER_WATCH": self.WATCH,
                  "HARK_VIEWER_STOP_WAIT": "8", "HARK_VIEWER_SETTLE": "1", "FAKE_STOP_TIMEOUT": "1",
                  # Shorter than came_up, or a server still waiting for its agent reads as a server
-                 # that would not listen, and every retry spends the whole wait again.
-                 "HARK_VIEWER_AGENT_WAIT": "10",
+                 # that would not listen, and every retry spends the whole wait again. Not much
+                 # shorter: the agent is two interpreter starts behind a fork, and ten seconds was
+                 # enough on a laptop and not on a CI runner about seven times slower at this.
+                 "HARK_VIEWER_AGENT_WAIT": "25",
                  "HARK_BIN": str(HERE / "fake_hark.py"), "HARK_VIEWER_MW": "off", "FAKE_LOG": str(self.log),
                  **self.EXTRA_ENV})
 

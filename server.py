@@ -150,10 +150,17 @@ def launch_agent():
             print(f"agent: cannot start {HARK_BIN}: {e}", file=sys.stderr, flush=True)
             return False
     end = time.time() + AGENT_WAIT
+    began = time.time()
     while time.time() < end:
         time.sleep(0.2)
         if hark("GET", "/status")[0] == 200:
             return True
+    # Which of the two it is matters: a process that is gone died and its own log says why, one
+    # that is still there was simply slower than this wait. Without this line a CI failure looks
+    # the same either way, and the first one took two rounds to tell apart.
+    alive = agent is not None and agent.poll() is None
+    print(f"agent: {HARK_BIN} did not answer in {time.time() - began:.1f} s; "
+          f"the process it started is {'still running' if alive else 'gone'}", file=sys.stderr, flush=True)
     return False
 
 

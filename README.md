@@ -30,6 +30,11 @@ hark writes a call's transcript to a file while people are still speaking. hark-
   hark models download fluidaudio:diarizer
   ```
 
+  Recording, the live transcript and everything on the page work on 0.4.3. The accurate transcript
+  written after a call needs a hark whose `--speaker-mode source` reads both channels of a file,
+  which is not released yet; point `HARK_BIN` at such a build, see [below](#getting-your-own-voice-back-out).
+  Without one that step still runs, hears the microphone alone, and says so as a warning.
+
 - Python 3. The one macOS ships is enough, and there are no packages to install.
 
 ## Use
@@ -45,11 +50,17 @@ cd hark-viewer
 ./hark-viewer quit                 # stop the call, the page server and the hark agent
 ./hark-viewer relabel              # fix the speaker labels of the call just finished
 ./hark-viewer finalize             # write the accurate transcript by hand (a stopped call gets it on its own)
+./hark-viewer languages            # say which languages a call was in, and write nothing
 ```
 
 The first recording asks for the Microphone and System Audio Recording permissions. macOS attributes them to the terminal app you ran the command from.
 
 You can also start from the page. Pick a folder, type a title and press **Record**.
+
+Three things can be asked of the page through its URL. `?call=workspace/name` opens that call
+instead of the current one, `?workspace=name` puts that folder at the top of the picker even
+before any call has been filed under it, and `?quiet=SECONDS` changes how long the page waits
+before it guesses that a capture has died.
 
 ![A saved call, ready to record the next one](docs/images/saved.png)
 
@@ -59,7 +70,7 @@ You can also start from the page. Pick a folder, type a title and press **Record
 ~/Recordings/calls/<workspace>/<YYYY-MM-DD_HHMMSS>[_title]/
     audio.opus         the recording, microphone left, call right
     transcript.json    one JSON object per line: {"start", "end", "speaker", "text"}
-    meta.json          {"started", "workspace", "title"}, plus "parts" once the call was restarted
+    meta.json          {"started", "workspace", "title", "id"}, plus "parts" once the call was restarted
     transcript.final.json   the accurate transcript, written after the call stops
     transcript.mw.txt       MacWhisper's transcript of the same audio, when MacWhisper is installed
     postprocess.json        how far those two have got, and which languages the call was in
@@ -82,8 +93,11 @@ A hark that checks its own capture reports it in `/status` as `session.callAudio
 | `silent` | the call side is quiet, and hark checked that nothing is playing | grey note, `call side quiet for 00:42` |
 | `dead` | audio is playing and the capture hears none of it; hark is restarting the capture | red banner |
 | `recovered` | the capture is back | green note with the restart count |
+| `unknown` | nothing has been measured: no non-zero sample has arrived at all, which is what a missing or stale System Audio Recording grant looks like | nothing for the first 20 seconds, then a grey note pointing at System Settings > Privacy & Security |
 
 A hark without `callAudio` leaves the page to guess. After 90 seconds of recording with no new line and no open line it shows an amber note, `no new lines for 01:35`. Amber because nobody talking before a meeting starts looks the same from the page as a dead capture. `?quiet=SECONDS` on the page URL changes the 90.
+
+hark can also answer a start and then disown the capture behind it, keeping the session at `recording` and setting `session.capturing` to false. That is not a recording, and it is treated as one nowhere: a start answered that way is a failure rather than a call folder, `/api/status` reports `active: false`, and a call already on the page turns red and says nothing is being recorded.
 
 **Restart** on the page, or `./hark-viewer restart`, stops the recording and starts a new one into the same call folder. hark never overwrites a file, so the new part gets new names and `meta.json` lists them:
 
@@ -95,15 +109,21 @@ meta.json  "parts": [{"n": 1, "started": 1790000000.0, "audio": "audio.opus",   
                      {"n": 2, "started": 1790001173.2, "audio": "audio.part2.opus", "transcript": "transcript.part2.json"}]
 ```
 
-A call never restarted has no `parts` key and reads as it always did. The server answers `GET /<call>/transcript.json` for a restarted call with every part's lines joined, each part moved onto the call's clock by `part.started - meta.started`. The page reads that URL, so it shows one continuous transcript. A program reading the folder does the same sum, or asks the server. Restart also works after hark reports the session `failed`, and after the agent died, when it goes on in the call `current` points at. It refuses a call that already has its `postprocess.json`. With no live session it also refuses a call whose audio was last written over an hour ago, because `current` can point at an old call. `./hark-viewer restart --force` records on into it anyway, and the page has no such override.
+A call never restarted has no `parts` key and reads as it always did. The server answers `GET /<call>/transcript.json` for a restarted call with every part's lines joined, each part moved onto the call's clock by `part.started - meta.started`. The page reads that URL, so it shows one continuous transcript. A program reading the folder does the same sum, or asks the server. Restart also works after hark reports the session `failed`, after hark disowns its capture, and after the agent died, when it goes on in the call `current` points at. It refuses a call that already has its `postprocess.json`. With no live session it also refuses a call whose audio was last written over an hour ago, because `current` can point at an old call. `./hark-viewer restart --force` records on into it anyway, and the page has no such override.
 
-A start is answered only once hark's capture is open, so nothing said after the page says Recording is lost. Opening it takes a moment, and a recognizer model that is not in memory yet took 12.7 seconds on the first streamed call after a reboot, so the wait for that answer is 90 seconds (`HARK_VIEWER_START_TIMEOUT`) and not the 10 the other calls use. With a shorter wait than the start's own time, a recording that did begin is reported as a failure.
+The page shows the Restart button whenever the call on screen is the one the server is on and has no accurate transcript yet, which includes a dead agent, when there is no session at all and Restart is the only thing that recovers the call. Mute and Pause are disabled while the call recording is not the one on screen, because they would otherwise reach the other call silently; only Stop says which call it means.
 
-hark answers `stopped` the moment a stop is asked for. Its capture finishes writing the audio afterwards, `/status` does not show that, and until it is done `/start` answers 409 "still finishing". So a restart, and a new call, keep asking for up to 15 seconds (`HARK_VIEWER_STOP_WAIT`). hark itself gives up on a capture after 10 seconds and then refuses every start until its agent is restarted, so past the 15 the server kills the agent on hark's port, and only a process whose command line says `--remote-control`, starts a new one and asks once more.
+The new part is written into `meta.json` before hark is asked to start it, so a crash between the two leaves a part that is listed rather than a recording no reader will ever find. If the start fails it is taken back out.
+
+A start is answered only once hark's capture is open, so nothing said after the page says Recording is lost. Opening it takes a moment, and a recognizer model that is not in memory yet took 12.7 seconds on the first streamed call after a reboot, so the wait for that answer is 90 seconds (`HARK_VIEWER_START_TIMEOUT`) and not the 10 the other calls use. With a shorter wait than the start's own time, a recording that did begin is reported as a failure. And when the answer itself goes wrong for a capture that did begin, as hark's HTTP server does when its own ceiling on a handler cuts the start off with a 500, the page asks hark what it is recording and carries on with that. It keeps asking for a couple of seconds (`HARK_VIEWER_DISOWNED_WAIT`), because a capture that is still opening is not in `/status` yet and one look would call it a failure.
+
+The waiting only works if the client waits too. The server adds up its own worst case for one start and reports it as `patience` in `/api/status`. That sum walks the whole chain, the agent check, the status read, the wait for a capture that is still finishing, the relaunch and the start after it, rather than estimating, because a number smaller than the chain reaches you as a timeout on a call that was recording. `./hark-viewer` reads that number and hands it to curl as the request's own limit. One number, both sides, so a start the server is still waiting out never reaches you as a timeout.
+
+hark answers `stopped` the moment a stop is asked for. Its capture finishes writing the audio afterwards, `/status` does not show that, and until it is done `/start` answers 409 "still finishing". So a restart, and a new call, keep asking for up to 15 seconds (`HARK_VIEWER_STOP_WAIT`). hark itself gives up on a capture after 10 seconds and then refuses every start until its agent is restarted, so past the 15 the server kills the agent on hark's port, and only a process whose command line says `--remote-control`, starts a new one and asks once more. A fresh agent gets 30 seconds to answer (`HARK_VIEWER_AGENT_WAIT`), and a hark slower than that is waited for rather than started a second time. The old agent has 10 seconds to let go of the port (`HARK_VIEWER_DIE_WAIT`). An agent that outlives the kill still holds it, so nothing fresh can bind it, and the restart then says the agent did not come back rather than handing the wedged one back. A hark that is not installed at all leaves the page server running, because saying so is the page's job.
 
 ## The accurate transcript
 
-The live transcript is the fast pass. When a call stops, whether from the page, `hark-viewer stop`, `hark-viewer quit` or hark itself, the server starts [`postprocess.py`](postprocess.py) as a detached process. It outlives the page and the server, runs at low priority, and never touches the audio or `transcript.json`. Because `stopped` comes before the audio is complete, the job first waits until no part's audio has changed for 5 seconds, for at most 120, and records that wait as `settled: {"waited", "capped"}`. `hark-viewer quit` waits the same way before it kills the agent. The job writes:
+The live transcript is the fast pass. When a call ends the server starts [`postprocess.py`](postprocess.py) as a detached process. Every ending counts, including one no server was running for: at startup the server looks at the call `current` points at, and writes the accurate transcript for it if hark is not recording it and it has none. A stop from the page, `hark-viewer stop` or `hark-viewer quit` starts the job at once. The other endings are hark reporting the session `failed`, hark disowning its capture, and the agent dying with the call still open. Those wait a minute first (`HARK_VIEWER_ENDED_GRACE`). That minute belongs to Restart, which records on into the same call, and a call that already has its accurate transcript will not be restarted. It outlives the page and the server, runs at low priority, and never touches the audio or `transcript.json`. Because `stopped` comes before the audio is complete, the job first waits until no part's audio has changed for 5 seconds, for at most 120, and records that wait as `settled: {"waited", "capped"}`. `hark-viewer quit` waits the same way before it kills the agent. The job writes:
 
 - `transcript.final.json`, from `hark -i <audio> --speakers --speaker-mode source --speaker-labels "Microphone,Others"` over each part, joined on the call's clock. JSON Lines with the keys of `transcript.json`. It needs a hark whose `--speaker-mode source` reads a file's two channels, see [below](#getting-your-own-voice-back-out).
 - `transcript.mw.txt`, from MacWhisper's `mw transcribe <audio> --speakers`, tried twice, because it fails now and then with `GRDB.RecordError error 0` and works the next time. This one is there to compare the two transcribers and will go. `HARK_VIEWER_MW=off` turns it off, and without MacWhisper installed the step is skipped.
@@ -112,16 +132,23 @@ The live transcript is the fast pass. When a call stops, whether from the page, 
 
 ```json
 {"state": "done", "pid": 48020, "started": 1790010463.1, "finished": 1790010632.7, "settled": {"waited": 5.2, "capped": false},
- "steps": {"final": {"state": "done", "started": 1790010463.1, "finished": 1790010495.4, "error": null, "skipped_spans": []},
-           "languages": {"state": "done", "started": 1790010495.4, "finished": 1790010496.2, "error": null, "skipped_spans": [],
+ "steps": {"final": {"state": "done", "started": 1790010463.1, "finished": 1790010495.4, "error": null,
+                     "skipped_spans": [], "warning": null},
+           "languages": {"state": "done", "started": 1790010495.4, "finished": 1790010496.2, "error": null,
+                         "skipped_spans": [], "warning": null,
                          "languages": {"dominant": "en", "present": ["en"], "mixed": false, "judged": 230,
                                        "shares": {"en": 1.0}, "other_lines": 0, "other": [], "source": "transcript.final.json"}},
-           "mw":    {"state": "done", "started": 1790010496.2, "finished": 1790010632.7, "error": null, "skipped_spans": []}}}
+           "mw":    {"state": "done", "started": 1790010496.2, "finished": 1790010632.7, "error": null,
+                     "skipped_spans": [], "warning": null}}}
 ```
 
 `state` is `running`, `done` or `failed`, and follows the `final` step. A step is `pending`, `running`, `done`, `failed` or `skipped`. A job that died reads as `failed`, also when another process has taken its pid since. A job sent SIGTERM removes its scratch folder and records `failed`, and each job sweeps the scratch folders of jobs that were killed outright.
 
 hark can refuse a whole recording. It did on a 51-minute file, with `Invalid audio data provided. Must be at least 300ms of 16kHz audio`. The job then cuts that part into 10-minute pieces with `ffmpeg`, halves any piece hark still refuses down to about 20 seconds, and skips only the piece that fails at that size. `skipped_spans` lists what it skipped as `{"start", "end", "part", "error"}` on the call's clock. When hark refuses every piece the step fails and writes no transcript.
+
+A step that finished but has something to tell you puts it in `warning`. There is one so far: when no line of the accurate transcript came from the call side, every line reads `Microphone`, which is what a hark that reads only channel 0 of the recording produces. The step still succeeds, because those lines are real, they are just half the call, and the page shows the warning next to the transcript's state.
+
+Every tool the job runs has a deadline, so a hark, an `mw` or an `ffmpeg` that never returns fails its step instead of leaving the job reading `running` for ever. `HARK_VIEWER_TOOL_TIMEOUT` is the one for anything that reads a whole call, which includes the pass `hark-viewer relabel` makes over the recording to pull out the call channel, and `HARK_VIEWER_PROBE_TIMEOUT` the one for the quick tools: `ffprobe`, the language recognizer, and an `ffmpeg` cutting one piece.
 
 `postprocess.json` is also the lock. The job links it into place already filled in, so it runs once per call and nobody ever reads the file empty. `./hark-viewer finalize [call] --force` runs it again, and without `--force` it does a call that never got one, such as a call recorded before this existed.
 
@@ -162,7 +189,7 @@ browser page  ──►  server.py :8474  ──►  hark --remote-control :8473
 
 | Request | Does |
 |---|---|
-| `GET /api/status` | Agent state, the active session, the call it belongs to, its number of `parts`, the `postprocess` state of that call, and the workspace folders. The session goes through as hark sent it, so it carries `partial` while a streaming hark has a line open and `callAudio` on a hark that checks its capture, and neither key otherwise |
+| `GET /api/status` | Agent state, the active session, the call it belongs to, its number of `parts`, the `postprocess` state of that call, the workspace folders, and `patience`, the longest a start can take. The session goes through as hark sent it, so it carries `partial` while a streaming hark has a line open, `callAudio` on a hark that checks its capture and `capturing` on one that disowns it, and none of those keys otherwise |
 | `POST /api/new` with `{"workspace", "title"}` | Creates the call folder and starts recording |
 | `POST /api/restart` | Stops the recording and starts the next part in the same call folder. Answers `{"call", "part"}`, or 409 when nothing is recording |
 | `POST /api/stop`, `/pause`, `/resume`, `/mute`, `/unmute` | Forwarded to hark |
@@ -177,14 +204,34 @@ Every `POST` needs the header `X-Hark-Viewer: 1`.
 | `HARK_VIEWER_ROOT` | `~/Recordings/calls` | Where calls are filed |
 | `HARK_VIEWER_PORT` | `8474` | Port of the page |
 | `HARK_REMOTE_CONTROL_PORT` | `8473` | Port of hark's agent |
-| `HARK_VIEWER_BROWSER` | `Firefox` | App that opens the page; the system default is used when it is missing |
+| `HARK_VIEWER_BROWSER` | `Firefox` | App that opens the page; the system default is used when it is missing, and `off` records without opening anything |
 | `HARK_BIN` | `hark` | The hark binary to run. Point it at your own build to run an unreleased hark |
+| `HARK_VIEWER_CONFIG` | `~/.config/hark-viewer.env` | The settings file the launcher reads |
 | `HARK_VIEWER_MW` | `/Applications/MacWhisper.app/Contents/MacOS/mw` | MacWhisper's command line, for `transcript.mw.txt`. `off` skips that step |
+| `HARK_VIEWER_PY3` | `/usr/bin/python3` | The interpreter that carries the PyObjC bridge to Apple's language recognizer |
+
+Timing, all in seconds. The defaults are what a real call needs, and nothing here has to be set.
+
+| Variable | Default | |
+|---|---|---|
 | `HARK_VIEWER_START_TIMEOUT` | `90` | How long to wait for hark to answer a start. hark answers only once the capture is open, and a recognizer model that is not in memory yet took 12.7 s on the first streamed call after a reboot |
+| `HARK_VIEWER_STOP_WAIT` | `15` | How long a start waits out a capture that is still finishing before the agent is relaunched |
+| `HARK_VIEWER_AGENT_WAIT` | `30` | How long a freshly started hark agent gets to answer |
+| `HARK_VIEWER_DIE_WAIT` | `10` | How long a killed agent gets to let go of hark's port. Past it the relaunch fails rather than handing the same agent back |
+| `HARK_VIEWER_DISOWNED_WAIT` | `2` | How long a start this side gave up on is watched for, in case hark is still opening its capture |
+| `HARK_VIEWER_PROBE_WAIT` | `10` | How long `lsof` and `ps` get while a relaunch works out what holds hark's port |
+| `HARK_VIEWER_ENDED_GRACE` | `60` | How long an ending other than a stop is left for a Restart before the accurate transcript is written |
+| `HARK_VIEWER_WATCH` | `2` | Between looks at hark for a call that ended |
+| `HARK_VIEWER_SETTLE` | `5` | A recording unchanged for this long is finished, so the offline passes may read it |
+| `HARK_VIEWER_SETTLE_CAP` | `120` | And past this they go on regardless, which is recorded as `settled.capped` |
+| `HARK_VIEWER_TOOL_TIMEOUT` | `7200` | Deadline for one hark or `mw` pass over a whole call |
+| `HARK_VIEWER_PROBE_TIMEOUT` | `120` | Deadline for `ffprobe`, `ffmpeg` and the language recognizer |
 
-Set any of these in the environment, or in `~/.config/hark-viewer.env`, which the launcher reads if it exists.
+And three the offline pass uses to decide what it reads: `HARK_VIEWER_CHUNK` (600) is how long a piece is when hark has refused a whole part, `HARK_VIEWER_MIN_PIECE` (20) how short a piece has to get before a failure is skipped rather than halved again, and `HARK_VIEWER_LANG_MIN_CHARS` (25) how long a line must be to be worth judging a language from.
 
-The `START` dictionary at the top of [`server.py`](server.py) holds what hark records with. By default that is system audio with the microphone mixed in, speaker labels, and the Core Audio backend.
+Set any of these in the environment, or in `~/.config/hark-viewer.env`, which the launcher reads if it exists and exports whole, so a setting only the page server or the offline job reads still reaches it. A server already running keeps the settings it started with, so `./hark-viewer quit` before changing one.
+
+The `START` dictionary at the top of [`server.py`](server.py) holds what hark records with: system audio with the microphone mixed in, speaker labels, the Core Audio backend, `tracks: stereo` so the microphone and the call stay on their own channels, `liveStreaming` for the line still being spoken, and `ifExists: error` so hark never writes over a recording. A hark that does not know a key ignores it.
 
 ## As an agent skill
 
@@ -210,7 +257,7 @@ Live speaker numbers are guessed as the audio arrives, so a long call with sever
 - `speakers.json`, the spans it found, so a second run needs no model
 - `transcript.speakers.json`, the live lines with the speaker of the span each one overlaps most
 
-It never touches `transcript.json`, and it leaves lines labelled `You` alone. [`server.py`](server.py) serves `transcript.speakers.json` in place of `transcript.json` when it exists, so the page and any agent reading the call get the better labels for free. A page already on screen keeps the rows it has drawn. Reload for the new colours. Run it once the call is over: a line hark appends after the relabel makes the live file the newer one, and the newer file is the one served.
+It never touches `transcript.json`, and it leaves lines labelled `You` alone. [`server.py`](server.py) serves `transcript.speakers.json` in place of `transcript.json` when it exists, so the page and any agent reading the call get the better labels for free. A page already on screen keeps the rows it has drawn. Reload for the new colours. Run it once the call is over: a line hark appends after the relabel makes the live file the newer one, and the newer file is the one served. Run straight after Stop it waits for the recording to stop changing first, the same way the accurate pass does, and says how long it waited.
 
 On the eight-person call this was built against, the live pass used three speaker numbers and the offline pass found all seven. 59 of the 69 non-`You` lines matched a span and the other 10 kept their live label. The run took eleven seconds. `relabel` exits 3 and writes nothing when fewer than 60% of the lines match, which catches spans belonging to a different recording.
 
@@ -233,7 +280,9 @@ A hark built from those branches used to stop the offline pass with `Must be at 
 python3 -m unittest discover tests
 ```
 
-They need `ffmpeg` and no hark. A fake hark, a fake `mw` and a fake remote-control agent on spare ports stand in, so they never touch a live recording or ports 8473 and 8474.
+They need `ffmpeg`, `lsof` and `zsh`, and no hark. A fake hark, a fake `mw`, a fake diarizer and a fake remote-control agent on spare ports stand in, so they never touch a live recording or ports 8473 and 8474. The language tests also need `/usr/bin/python3` with the PyObjC bridge and skip themselves without it, which is quiet enough to miss.
+
+Run them under `/usr/bin/python3` as well as whichever `python3` is on your PATH. That one is 3.9, it is what the language step always uses, and syntax newer than 3.9 passes the first run and fails the second. [GitHub Actions](.github/workflows/ci.yml) runs both on every pull request and on every push to `main`, one job per interpreter, on a macOS runner, because `st_birthtime`, `lsof` and the PyObjC bridge have no counterpart elsewhere. The step also fails if fewer than fifty tests ran, since `unittest discover` reports success against a tests directory that has been moved.
 
 ## Limits
 

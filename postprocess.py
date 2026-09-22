@@ -33,6 +33,8 @@ ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "cal
 HARK_BIN = os.environ.get("HARK_BIN", "hark")
 # MacWhisper's pass is a comparison lane. HARK_VIEWER_MW=off turns it off, a path names another mw.
 MW_BIN = os.environ.get("HARK_VIEWER_MW", "/Applications/MacWhisper.app/Contents/MacOS/mw")
+AUDIO = "audio.opus"                 # part 1 of every call; server.py and relabel_speakers.py read it from here
+LABELS = ("Microphone", "Others")    # the two sides of the recording, as the accurate pass names them
 STATUS = "postprocess.json"
 FINAL = "transcript.final.json"
 MW_OUT = "transcript.mw.txt"
@@ -56,6 +58,12 @@ LANG_OTHER_LINES = 2         # and one stray line is noise: a language is in the
 LANG_OTHER_SHARE = 0.10      # or takes this much of a call too short for two lines to mean anything
 LANG_MAX_OTHER = 60          # lines of another language listed one by one
 MAX_FAILURES = 25   # per part. A hark that refuses everything (a missing flag, a missing model) must not be bisected for an hour.
+# No subprocess may hang for good. `ps` is the sharp one: read_status runs it inside the server's
+# request thread on every one-second poll. And a hung hark or mw left postprocess.json reading
+# `running` for ever, so anything waiting on that file waited for ever too.
+PS_TIMEOUT = 5                                                              # `ps` answers at once or not at all
+PROBE_TIMEOUT = float(os.environ.get("HARK_VIEWER_PROBE_TIMEOUT", "120"))    # ffprobe, ffmpeg, the language recognizer
+TOOL_TIMEOUT = float(os.environ.get("HARK_VIEWER_TOOL_TIMEOUT", "7200"))     # hark's and mw's pass over a whole call
 
 
 # ---- a call and its parts (server.py imports these) ----
@@ -72,7 +80,7 @@ def parts_of(folder, meta=None):
     """The parts of a call, oldest first. A call never restarted has one, and no `parts` key."""
     meta = read_meta(folder) if meta is None else meta
     parts = [p for p in meta.get("parts") or [] if isinstance(p, dict) and p.get("audio") and p.get("transcript")]
-    return parts or [{"n": 1, "started": meta.get("started"), "audio": "audio.opus", "transcript": "transcript.json"}]
+    return parts or [{"n": 1, "started": meta.get("started"), "audio": AUDIO, "transcript": "transcript.json"}]
 
 
 def offset_of(part, meta):
@@ -147,18 +155,37 @@ def read_status(folder):
     return st
 
 
+def elapsed_seconds(etime):
+    """`ps -o etime=` as seconds. Its format is [[dd-]hh:]mm:ss."""
+    days, dash, rest = etime.strip().partition("-")
+    if not dash:
+        days, rest = "0", days
+    parts = [float(piece) for piece in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0.0)
+    return int(days) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
 def alive(pid, started=None):
-    """Is this the job that wrote `started`? A zombie is dead, and so is a stranger that got the same pid later."""
+    """Is this the job that wrote `started`? A zombie is dead, and so is a stranger that got the same pid later.
+
+    The age comes from how long the process has been running, not from `ps -o lstart`: turning a
+    local clock time into an epoch is an hour out for an hour after a DST fall-back, which read a
+    running job as failed and let --force start a second job over the same call. Elapsed time needs
+    no timezone. It is whole seconds and rounds down, hence the three-second slack below.
+    """
     try:
-        run = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(int(pid))], capture_output=True, text=True,
-                             env={**os.environ, "LC_ALL": "C"})
-        stat, born = run.stdout.strip().split(None, 1)
-        born = time.mktime(time.strptime(born.strip(), "%a %b %d %H:%M:%S %Y"))
+        run = subprocess.run(["ps", "-o", "stat=,etime=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=PS_TIMEOUT, env={**os.environ, "LC_ALL": "C"})
+        stat, etime = run.stdout.strip().split(None, 1)
+        born = time.time() - elapsed_seconds(etime)
+    except subprocess.TimeoutExpired:
+        return True                    # `ps` hung: better to say nothing than to call a running job dead
     except (OSError, TypeError, ValueError):
         return False
     if stat.startswith("Z"):
         return False
-    return not isinstance(started, (int, float)) or born <= started + 2   # the job writes `started` after it is born
+    return not isinstance(started, (int, float)) or born <= started + 3   # the job writes `started` after it is born
 
 
 def settle(paths):
@@ -193,8 +220,11 @@ class Refused(Exception):
 
 
 def duration_of(audio):
-    run = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(audio)],
-                         capture_output=True, text=True)
+    try:
+        run = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(audio)],
+                             capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffprobe did not answer for {audio.name} in {PROBE_TIMEOUT:.0f} s")
     try:
         return float(run.stdout.strip().splitlines()[0])
     except (ValueError, IndexError):
@@ -203,9 +233,12 @@ def duration_of(audio):
 
 def cut(audio, start, length, dest):
     """One piece as 16 kHz WAV, both channels kept: the microphone and the call stay apart."""
-    run = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
-                          "-i", str(audio), "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
-                         capture_output=True, text=True)
+    try:
+        run = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
+                              "-i", str(audio), "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
+                             capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"ffmpeg did not cut {audio.name} at {start:.0f}s in {PROBE_TIMEOUT:.0f} s")
     if run.returncode != 0 or not dest.is_file():
         raise RuntimeError(f"ffmpeg could not cut {audio.name} at {start:.0f}s: {run.stderr.strip()[-300:]}")
 
@@ -215,8 +248,10 @@ def run_hark(audio, tmp):
     out = Path(tmp) / f"{uuid.uuid4().hex}.json"
     try:
         run = subprocess.run([HARK_BIN, "-i", str(audio), "--speakers", "--speaker-mode", "source",
-                              "--speaker-labels", "Microphone,Others", "-t", str(out)],
-                             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+                              "--speaker-labels", ",".join(LABELS), "-t", str(out)],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"hark ran {TOOL_TIMEOUT:.0f} s without finishing and was killed"
     except OSError as e:
         return None, f"{HARK_BIN}: {e}"
     if run.returncode != 0:
@@ -289,7 +324,14 @@ def step_final(folder, tmp, log):
                     for g in gaps]
     lines.sort(key=lambda e: e["start"])
     write_atomic(folder / FINAL, jsonl(lines))
-    return skipped
+    # A hark whose --speaker-mode source does not read a file's two channels hears the microphone
+    # and nothing else, and says so by labelling every line with it. The lines are real, they are
+    # just half the call, so this is a warning on a step that succeeded rather than a failure.
+    warning = None
+    if lines and all(e.get("speaker") == LABELS[0] for e in lines):
+        warning = f"every line is {LABELS[0]}; is HARK_BIN a build with --speaker-mode source?"
+        log(f"final: {warning}")
+    return {"skipped_spans": skipped, "warning": warning}
 
 
 # ---- which languages the call was in ----
@@ -316,7 +358,10 @@ def recognize(texts):
     if not texts:
         return []
     try:
-        run = subprocess.run([PY3, "-c", RECOGNIZE], input=json.dumps(texts), capture_output=True, text=True)
+        run = subprocess.run([PY3, "-c", RECOGNIZE], input=json.dumps(texts), capture_output=True, text=True,
+                             timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"the language recognizer did not answer in {PROBE_TIMEOUT:.0f} s")
     except OSError as e:
         raise RuntimeError(f"{PY3}: {e}")
     if run.returncode != 0:
@@ -428,17 +473,21 @@ def step_mw(folder, tmp, log):
         if not audio.is_file():
             raise RuntimeError(f"{part['audio']} is missing")
         for attempt in (1, 2):                      # it fails now and then with "GRDB.RecordError error 0" and works the second time
-            run = subprocess.run([MW_BIN, "transcribe", str(audio), "--speakers"],
-                                 stdin=subprocess.DEVNULL, capture_output=True, text=True)
-            if run.returncode == 0 and run.stdout.strip():
-                break
-            why = f"mw exited {run.returncode}: {(run.stderr or run.stdout).strip()[-400:]}"
+            try:
+                run = subprocess.run([MW_BIN, "transcribe", str(audio), "--speakers"],
+                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+                said = run.stdout.strip()
+                why = f"mw exited {run.returncode}: {(run.stderr or run.stdout).strip()[-400:]}"
+                if run.returncode == 0 and said:
+                    break
+            except subprocess.TimeoutExpired:
+                said, why = "", f"mw ran {TOOL_TIMEOUT:.0f} s without finishing and was killed"
             log(f"{audio.name}: {why}" + ("; trying once more" if attempt == 1 else ""))
             if attempt == 2:
                 raise RuntimeError(why)
             time.sleep(2)
         head = f"== part {part.get('n')}, starts {offset_of(part, meta):.0f} s into the call ==\n" if len(parts) > 1 else ""
-        chunks.append(head + run.stdout.strip() + "\n")
+        chunks.append(head + said + "\n")
     write_atomic(folder / MW_OUT, "\n".join(chunks))
     return []
 
@@ -498,7 +547,8 @@ def main():
     steps = [("final", step_final, None), ("languages", step_languages, languages_skip()),
              ("mw", step_mw, mw_skip())]
     status = {"state": "running", "pid": os.getpid(), "started": time.time(), "finished": None, "settled": None,
-              "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None, "skipped_spans": []}
+              "steps": {name: {"state": "pending", "started": None, "finished": None, "error": None,
+                               "skipped_spans": [], "warning": None}
                         for name, _, _ in steps}}
     # The one-run-per-call lock. Linked into place whole, so nobody ever reads it empty, not even after a kill.
     first = status_path.with_name(f"{STATUS}.{os.getpid()}.tmp")

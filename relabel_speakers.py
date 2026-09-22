@@ -28,8 +28,10 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "calls")).expanduser()
-AUDIO = "audio.opus"
+import postprocess
+
+ROOT = postprocess.ROOT          # one call folder, one set of names: postprocess.py owns both
+AUDIO = postprocess.AUDIO
 MIC_LABEL = "You"
 
 
@@ -52,26 +54,14 @@ def resolve_call(name):
     return folder
 
 
-def read_lines(path):
-    """The live transcript. Each line keeps its own key order."""
-    out = []
-    for raw in path.read_text().splitlines():
-        if not raw.strip():
-            continue
-        try:
-            entry = json.loads(raw)
-        except ValueError:
-            continue                       # a half-written last line
-        if isinstance(entry, dict) and isinstance(entry.get("text"), str):
-            out.append(entry)
-    return out
-
-
 def channel_count(audio):
-    run = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=channels", "-of", "csv=p=0", str(audio)],
-        capture_output=True, text=True)
+    try:
+        run = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=channels", "-of", "csv=p=0", str(audio)],
+            capture_output=True, text=True, timeout=postprocess.PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"ffprobe did not answer for {audio} in {postprocess.PROBE_TIMEOUT:.0f} s")
     try:
         return int(run.stdout.strip().splitlines()[0])
     except (ValueError, IndexError):
@@ -85,10 +75,16 @@ def split_call_channel(audio, dest):
     another voice wherever it overlaps, and the diarizer invents speakers.
     """
     channel = 1 if channel_count(audio) > 1 else 0
-    run = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio),
-         "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
-        capture_output=True, text=True)
+    try:
+        run = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio),
+             "-af", f"pan=mono|c0=c{channel}", "-ar", "16000", "-c:a", "pcm_s16le", str(dest)],
+            # This decodes the whole recording, so it belongs with the passes over a whole call and
+            # not with the quick tools. On the short deadline a long call on a loaded machine died
+            # saying ffmpeg could not split the channel, where before it simply took longer.
+            capture_output=True, text=True, timeout=postprocess.TOOL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"ffmpeg did not split the call channel in {postprocess.TOOL_TIMEOUT:.0f} s")
     if run.returncode != 0 or not dest.is_file():
         die(f"ffmpeg could not split the call channel: {run.stderr.strip()}")
     return channel
@@ -98,7 +94,10 @@ def diarize(hark_bin, wav, engine):
     """Diarized spans from hark. `-t -` writes the transcript to stdout, notices to stderr."""
     cmd = [hark_bin, "-i", str(wav), "-t", "-", "--speakers", "--speaker-mode", "acoustic",
            "--transcript-format", "json", "--engine", engine]
-    run = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=postprocess.TOOL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"{hark_bin} ran {postprocess.TOOL_TIMEOUT:.0f} s without finishing and was killed")
     if run.stderr.strip():
         print(run.stderr.rstrip(), file=sys.stderr)
     if run.returncode != 0:
@@ -139,13 +138,6 @@ def best_label(spans, start, end):
     return best
 
 
-def write_atomic(path, payload):
-    """Through a temp file in the same folder, so a reader never sees half a file."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(payload)
-    os.replace(tmp, path)
-
-
 def main():
     ap = argparse.ArgumentParser(
         description="Relabel a finished call's speakers from an offline diarizer pass.")
@@ -166,7 +158,7 @@ def main():
 
     folder = resolve_call(args.call)
     audio = folder / AUDIO
-    lines = read_lines(folder / "transcript.json")
+    lines = postprocess.read_lines(folder / "transcript.json")
     if not lines:
         die(f"{folder / 'transcript.json'} has no lines")
 
@@ -181,13 +173,18 @@ def main():
     if spans is None:
         if shutil.which(args.hark) is None and not Path(args.hark).is_file():
             die(f"hark not found: {args.hark} (set --hark or HARK_BIN)")
+        # hark reports `stopped` before its capture has finished writing the audio, so a relabel run
+        # straight after Stop used to diarize a file hark was still growing.
+        waited, capped = postprocess.settle([audio])
+        if waited:
+            print(f"waited {waited:.1f} s for {AUDIO} to stop changing" + (", gave up" if capped else ""))
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "call.wav"
             channel = split_call_channel(audio, wav)
             spans = diarize(args.hark, wav, args.engine)
         source = f"{args.hark} --engine {args.engine} on channel {channel}"
         if not args.dry_run:
-            write_atomic(cache, json.dumps(
+            postprocess.write_atomic(cache, json.dumps(
                 {"generated": time.time(), "hark": args.hark, "engine": args.engine,
                  "channel": channel, "spans": spans}, indent=1))
 
@@ -222,7 +219,7 @@ def main():
     if args.dry_run:
         print("dry run: nothing written")
     else:
-        write_atomic(folder / "transcript.speakers.json",
+        postprocess.write_atomic(folder / "transcript.speakers.json",
                      "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in out))
         print(f"wrote {folder / 'transcript.speakers.json'}")
 

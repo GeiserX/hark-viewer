@@ -112,12 +112,16 @@ let call = params.get('call'), st = null, shown = 0, lastWho = null, startMs = n
 // For a hark that does not report on its capture: when this page last saw any sign of speech.
 let heardAt = Date.now(), heardKey = '';
 const QUIET_AFTER = (+params.get('quiet') || 90) * 1000;
+// How long a recording runs before hark having measured no call audio at all is worth saying.
+const MEASURED_BY = 20;
 
 const pad = n => String(n).padStart(2, '0');
 const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
 const span = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600); return (h ? h + ':' : '') + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60); };
 const get = path => fetch(path + (path.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' });
 const mine = () => st && st.active && st.call === call;   // is the call on screen the one being recorded?
+// hark still calls the session `recording` while telling us the capture behind it never opened.
+const notCapturing = () => !!(st && st.call === call && st.session && st.session.capturing === false);
 
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 6000); }
 
@@ -218,11 +222,22 @@ async function poll() {
 function notice() {
   const s = st && st.session, el = $('notice');
   let kind = '', text = '';
-  if (mine() && s.callAudio) {
+  // hark answered the start and then said its capture never opened. Nothing is being recorded.
+  if (notCapturing()) { kind = 'dead'; text = 'NOTHING IS BEING RECORDED. hark answered the start but says its capture is not running. Press Restart.'; }
+  else if (mine() && s.callAudio) {
     const a = s.callAudio, n = a.restarts ? a.restarts + (a.restarts === 1 ? ' capture restart' : ' capture restarts') : '';
     if (a.state === 'dead') { kind = 'dead'; text = 'CALL AUDIO LOST for ' + span(a.silentFor || 0) + '. Audio is playing and hark hears none of it. hark is restarting the capture' + (n ? ' (' + n + ' so far)' : '') + '. If this stays, press Restart.'; }
     else if (a.state === 'silent') { kind = 'quiet'; text = 'call side quiet for ' + span(a.silentFor || 0); }
     else if (a.state === 'recovered') { kind = 'fine'; text = 'call audio is back' + (n ? ' after ' + n : ''); }
+    // `unknown` is hark saying it has measured nothing at all. It stays that way for a whole
+    // recording when the tap never delivers one non-zero sample, which is what a missing or stale
+    // System Audio Recording grant looks like, and it also shows when a run of zeros was worth
+    // questioning and the throwaway tap could not be built. Only after MEASURED_BY, because the
+    // opening cycles of a real call are often silent and a warning then would cry wolf.
+    else if (a.state === 'unknown' && (s.elapsed || 0) > MEASURED_BY) {
+      kind = 'quiet';
+      text = 'no call audio heard yet: if people are talking, check System Audio Recording for hark in System Settings > Privacy & Security';
+    }
   } else if (mine() && failures < 3) {           // out of touch with the server, the status is stale and says nothing
     // Anything new counts as speech: a line, a change in the open line, leaving a pause.
     const key = [shown, s.state, s.partial && s.partial.text].join('|');
@@ -239,7 +254,8 @@ function finalNote() {            // the accurate transcript the server writes o
   if (p.state === 'failed' || f.state === 'failed') return '  ·  final transcript: failed';
   if (f.state !== 'done') return '  ·  final transcript: running';
   const gaps = (f.skipped_spans || []).length;
-  return '  ·  final transcript: ready' + (gaps ? ' (' + gaps + (gaps === 1 ? ' span' : ' spans') + ' skipped)' : '');
+  return '  ·  final transcript: ready' + (gaps ? ' (' + gaps + (gaps === 1 ? ' span' : ' spans') + ' skipped)' : '')
+    + (f.warning ? '  ·  ' + f.warning : '');
 }
 
 function paint() {
@@ -250,16 +266,24 @@ function paint() {
     state = s.state; label = s.state === 'paused' ? 'paused' : 'rec';
     meta = span(s.elapsed) + (s.muted ? '  ·  mic muted' : '') + (lastLineAt ? '  ·  last line ' + span((Date.now() - lastLineAt) / 1000) + ' ago' : '');
   }
+  else if (notCapturing()) { state = 'offline'; label = 'not capturing'; meta = 'hark answered the start and is recording nothing'; }
   else if (s && s.state === 'failed' && st.call === call) { state = 'offline'; label = 'recording failed'; meta = s.error || ''; }
   else if (st && st.active) { state = 'ready'; label = 'another call is recording'; }
-  else if (call && shown) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }
+  // Saved as soon as the call is over, with or without lines: a call nobody spoke on used to read
+  // 'ready', which looks like a call that was never recorded.
+  else if (st && call) { state = 'saved'; label = 'saved'; meta = shown + ' lines' + finalNote(); }
   b.className = state + (pinned ? '' : ' scrolled');
   $('state').textContent = label; $('meta').textContent = meta;
   $('mute').textContent = s && s.muted ? 'Unmute mic' : 'Mute mic'; $('mute').classList.toggle('on', !!(s && s.muted));
   $('pause').textContent = s && s.state === 'paused' ? 'Resume' : 'Pause'; $('pause').classList.toggle('on', !!(s && s.state === 'paused'));
-  // Restarting is for the call on screen only: while it records, or once hark reports its capture failed.
-  $('restart').hidden = !(mine() || (s && s.state === 'failed' && st.call === call));
+  // Restarting is for the call on screen, and it is the recovery from every ending that is not a
+  // stop, including a dead agent, when the session is null and the page used to offer nothing at
+  // all. Once the call has its accurate transcript the server refuses it, so hide it then.
+  $('restart').hidden = !(st && st.call === call && !st.postprocess);
   if (st && st.active && !mine()) { b.classList.add('recording'); $('stop').textContent = '■ Stop the other call'; } else $('stop').textContent = '■ Stop';
+  // That class un-hides the busy buttons for another call's recording, and Mute and Pause would
+  // then act on it: only Stop says which call it means.
+  $('mute').disabled = $('pause').disabled = !mine();
   notice();
   $('empty').style.display = (shown || !$('partial').hidden) ? 'none' : 'block';
   $('empty').textContent = mine() ? 'Listening. A line appears each time someone pauses.' : (call ? 'No transcript lines in this call.' : 'Press Record to start a call.');

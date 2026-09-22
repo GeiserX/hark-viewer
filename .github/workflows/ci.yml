@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # macOS, and not by preference: st_birthtime, lsof and the PyObjC bridge that carries Apple's
+    # language recognizer are all macOS only. The standard runner is free on a public repository.
+    runs-on: macos-latest
+    # The suite is process-heavy and the runner is about seven times slower at it than a laptop:
+    # 18 minutes under the system python, and the first attempt at 30 was cut off mid-run.
+    timeout-minutes: 60
+    strategy:
+      # Both interpreters, because they are both real, and one at a time in its own job so that a
+      # slow run cannot eat the other's budget. The launcher runs whichever python3 is on PATH, and
+      # the language step always runs /usr/bin/python3, which is 3.9: a 3.10 syntax anywhere would
+      # pass under the first of these and fail under the second.
+      fail-fast: false
+      matrix:
+        python: [python3, /usr/bin/python3]
+    name: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false   # nothing here pushes, so the job has no use for the token
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      # What the runner costs for the two things that made this suite fail here and pass on a
+      # laptop. The second number is the stock class, not the one the code uses, so it keeps
+      # measuring the cost the override removes.
+      - name: What a reverse lookup and a bind cost here
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          "$PY" -c 'import socket,time;t=time.time();n=socket.getfqdn("127.0.0.1");print("getfqdn(127.0.0.1) =",repr(n),"in",round(time.time()-t,3),"s")'
+          "$PY" -c 'import time;from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler;t=time.time();s=ThreadingHTTPServer(("127.0.0.1",0),BaseHTTPRequestHandler);print("stock bind and activate in",round(time.time()-t,3),"s");s.server_close()'
+
+      - name: The suite
+        env:
+          PY: ${{ matrix.python }}
+          FLOOR: "50"
+        run: |
+          set -o pipefail
+          "$PY" --version
+          "$PY" -m unittest discover -s tests -v 2>&1 | tee /tmp/suite.log
+          # A gate that cannot go red is not a gate. `unittest discover` prints OK and exits 0
+          # against a tests directory that has been renamed or moved, so the count is checked too.
+          ran=$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' /tmp/suite.log | tail -1)
+          echo "ran ${ran:-0} tests, floor $FLOOR"
+          test "${ran:-0}" -ge "$FLOOR"

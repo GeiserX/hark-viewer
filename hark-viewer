@@ -8,27 +8,44 @@
 # hark-viewer finalize [call] [--force]      write the accurate transcript by hand (a stopped call gets it on its own)
 # hark-viewer languages [call]               say which languages a call was in, and write nothing
 #
-# Settings come from the environment or ~/.config/hark-viewer.env:
-#   HARK_BIN, HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER, HARK_VIEWER_MW
+# Settings come from the environment or from ~/.config/hark-viewer.env, whose every setting is
+# exported, so one the page server or the offline job reads reaches it too. HARK_BIN,
+# HARK_VIEWER_ROOT, HARK_VIEWER_PORT, HARK_VIEWER_BROWSER (off opens nothing), HARK_VIEWER_MW and
+# the rest are in the README. A server already running keeps what it started with: quit first.
 set -euo pipefail
 
 here="${0:A:h}"
 # Optional local settings, so a checkout stays generic: HARK_BIN, HARK_VIEWER_PORT, …
+# `set -a` exports every one of them, so a setting read only by the page server or by the offline
+# job reaches it. A server already running keeps the settings it started with: `quit` first.
 cfg="${HARK_VIEWER_CONFIG:-$HOME/.config/hark-viewer.env}"
-[[ -f "$cfg" ]] && source "$cfg"
+if [[ -f "$cfg" ]]; then set -a; source "$cfg"; set +a; fi
 export HARK_VIEWER_ROOT="${HARK_VIEWER_ROOT:-$HOME/Recordings/calls}"
 export HARK_VIEWER_PORT="${HARK_VIEWER_PORT:-8474}"
 export HARK_BIN="${HARK_BIN:-hark}"
 base="http://127.0.0.1:$HARK_VIEWER_PORT"
 api() { curl -sS --noproxy '*' --max-time 15 -H 'X-Hark-Viewer: 1' -H 'Content-Type: application/json' "$@"; }
-browse() { open -a "${HARK_VIEWER_BROWSER:-Firefox}" "$1" 2>/dev/null || open "$1"; }
+browse() { [[ "${HARK_VIEWER_BROWSER:-}" == off ]] || open -a "${HARK_VIEWER_BROWSER:-Firefox}" "$1" 2>/dev/null || open "$1"; }
+# A literal string as an extended regular expression, for pkill -f and pgrep -f.
+ere() { print -r -- "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+
+# A start can take minutes: the server waits out a capture that is still finishing, then hark
+# answers only once its own capture is open. The server computes its worst case and reports it as
+# `patience`, and that is the one number both sides use, so this side never gives up on a
+# recording that did begin. The 240 is only for a server too old to say.
+patience() { export HARK_VIEWER_PATIENCE="$(print -r -- "$1" |
+  python3 -c 'import json,sys; print(int(json.load(sys.stdin)["patience"]))' 2>/dev/null || print 240)"; }
 
 serve() {
-  api "$base/api/status" >/dev/null 2>&1 && return
+  local st
+  if st="$(api "$base/api/status" 2>/dev/null)"; then patience "$st"; return; fi
   command -v "${HARK_BIN:-hark}" >/dev/null || { print -u2 "hark-viewer: ${HARK_BIN:-hark} not found (brew install phantomydn/hark/hark, or set HARK_BIN to your own build)"; exit 69; }
   mkdir -p "$HARK_VIEWER_ROOT"
   nohup python3 "$here/server.py" >> "$HARK_VIEWER_ROOT/.server.log" 2>&1 &!
-  for i in {1..60}; do api "$base/api/status" >/dev/null 2>&1 && return; sleep 0.2; done
+  for i in {1..60}; do
+    if st="$(api "$base/api/status" 2>/dev/null)"; then patience "$st"; return; fi
+    sleep 0.2
+  done
   print -u2 "hark-viewer: the page server did not start, see $HARK_VIEWER_ROOT/.server.log"; exit 70
 }
 
@@ -36,8 +53,9 @@ case "${1:-}" in
   open) serve; browse "$base/" ;;
   stop) api -X POST "$base/api/stop"; print ;;
   restart)
+    serve
     data='{}'; [[ "${2:-}" == --force ]] && data='{"force": true}'   # --force: also a call last recorded over an hour ago
-    out="$(api -X POST --max-time 60 --data-binary "$data" -w '\n%{http_code}' "$base/api/restart")"
+    out="$(api -X POST --max-time "$HARK_VIEWER_PATIENCE" --data-binary "$data" -w '\n%{http_code}' "$base/api/restart")"
     print -r -- "${out%$'\n'*}"
     [[ "${out##*$'\n'}" == 200 ]] || exit 70 ;;
   quit)
@@ -51,18 +69,23 @@ case "${1:-}" in
       python3 "$here/postprocess.py" --settle-only current || true
       nohup python3 "$here/postprocess.py" current >> "$HARK_VIEWER_ROOT/.postprocess.log" 2>&1 &!
     fi
-    # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just finished.
-    pkill -TERM -f "hark --remote-control" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
+    # Only the agent: a plain `pkill -x hark` would also kill the offline pass of a call just
+    # finished. Matched by the binary's own name, because HARK_BIN is usually a build of your own
+    # and a hardcoded `hark` left that agent running. Escaped, because pkill -f and pgrep -f read
+    # the pattern as an extended regular expression: an unescaped `hark.1` also matches harkX1, a
+    # process that is not the agent, and an unescaped `hark+2` matches nothing at all.
+    agent="$(ere "${HARK_BIN:t}") --remote-control"
+    pkill -TERM -f "$agent" 2>/dev/null || true   # SIGTERM lets hark finalise the audio file
     pkill -f "$here/server.py" 2>/dev/null || true
     # Wait for it to go: starting again while a capture is still finishing gives an empty recording.
-    for i in {1..40}; do pgrep -f "hark --remote-control" >/dev/null || break; sleep 0.25; done ;;
+    for i in {1..40}; do pgrep -f "$agent" >/dev/null || break; sleep 0.25; done ;;
   relabel) shift; exec python3 "$here/relabel_speakers.py" "$@" ;;
   finalize) shift; exec python3 "$here/postprocess.py" "$@" ;;
   languages) shift; exec python3 "$here/postprocess.py" "${1:-current}" --languages-only ;;
   *)
     serve
     workspace="${1:-calls}"; shift || true
-    out="$(python3 -c 'import json,sys; print(json.dumps({"workspace": sys.argv[1], "title": " ".join(sys.argv[2:])}))' "$workspace" "$@" | api -X POST --data-binary @- -w '\n%{http_code}' "$base/api/new")"
+    out="$(python3 -c 'import json,sys; print(json.dumps({"workspace": sys.argv[1], "title": " ".join(sys.argv[2:])}))' "$workspace" "$@" | api -X POST --max-time "$HARK_VIEWER_PATIENCE" --data-binary @- -w '\n%{http_code}' "$base/api/new")"
     code="${out##*$'\n'}"; body="${out%$'\n'*}"
     url="$(print -r -- "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("url") or "")' 2>/dev/null || true)"
     if [[ "$code" != 200 ]]; then

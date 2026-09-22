@@ -58,7 +58,7 @@ START = {"system": True, "mix": True, "speakers": True, "captureBackend": "corea
          # Stream the line being spoken (about 2.5 s behind) instead of waiting for a
          # pause; the page shows it as the grey row. A hark without it ignores the key.
          "liveStreaming": True}
-AUDIO = "audio.opus"
+AUDIO = postprocess.AUDIO
 
 # Held by a restart from its stop to its start, and by every tick of the watcher, so
 # the stop in the middle of a restart is never taken for the end of the call.

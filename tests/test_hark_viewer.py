@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO))
 import postprocess  # noqa: E402
+import server  # noqa: E402
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -387,6 +388,84 @@ class LanguageSource(unittest.TestCase):
         lines, source = postprocess.language_lines(folder)
         self.assertEqual(source, "transcript.final.json")
         self.assertEqual([e["text"] for e in lines], ["the accurate text"])
+
+
+class Relabel(unittest.TestCase):
+    """relabel_speakers.py, driven with saved spans, so it needs neither hark nor ffmpeg."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def spans(self, *triples):
+        path = self.tmp / "spans.json"
+        path.write_text(json.dumps([{"start": s, "end": e, "speaker": who} for s, e, who in triples]))
+        return str(path)
+
+    def run_relabel(self, folder, *args):
+        return subprocess.run([sys.executable, str(REPO / "relabel_speakers.py"), str(folder), *args],
+                              capture_output=True, text=True, env={**os.environ, "HARK_VIEWER_ROOT": str(self.tmp)})
+
+    def test_spans_from_another_recording_are_refused_and_nothing_is_written(self):
+        """The coverage gate is the only thing between spans that belong to a different recording
+        and a transcript the page serves in place of the live one."""
+        folder = make_call(self.tmp, [(0, [line(1, 2, "You", "mine"), line(3, 4, "Speaker 1", "Ada"),
+                                          line(5, 6, "Speaker 1", "Bo")])])
+        live = (folder / "transcript.json").read_bytes()
+        run = self.run_relabel(folder, "--spans", self.spans((9000, 9001, "Ada")))
+        self.assertEqual(run.returncode, 3, run.stdout + run.stderr)
+        self.assertIn("below --min-coverage", run.stderr)
+        self.assertFalse((folder / "transcript.speakers.json").exists())
+        self.assertEqual((folder / "transcript.json").read_bytes(), live)
+
+    def test_matching_spans_relabel_the_other_voices_and_leave_the_microphone_alone(self):
+        folder = make_call(self.tmp, [(0, [line(1, 2, "You", "mine"), line(3, 4, "Speaker 1", "Ada"),
+                                          line(5, 6, "Speaker 1", "Bo")])])
+        live = (folder / "transcript.json").read_bytes()
+        run = self.run_relabel(folder, "--spans", self.spans((2.5, 4.5, "Ada"), (4.6, 7, "Bo")))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual([e["speaker"] for e in postprocess.read_lines(folder / "transcript.speakers.json")],
+                         ["You", "Ada", "Bo"])
+        self.assertEqual([e["text"] for e in postprocess.read_lines(folder / "transcript.speakers.json")],
+                         ["mine", "Ada", "Bo"])
+        self.assertEqual((folder / "transcript.json").read_bytes(), live)
+
+    def test_a_dry_run_writes_nothing(self):
+        folder = make_call(self.tmp, [(0, [line(3, 4, "Speaker 1", "Ada")])])
+        run = self.run_relabel(folder, "--spans", self.spans((2.5, 4.5, "Ada")), "--dry-run")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("nothing written", run.stdout)
+        self.assertFalse((folder / "transcript.speakers.json").exists())
+        self.assertFalse((folder / "speakers.json").exists())
+
+
+class BetterOf(unittest.TestCase):
+    """The server serves transcript.speakers.json in place of the live file, but only while it is
+    the newer of the two: a line hark appends after a relabel still has to reach the page."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hv-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.folder = make_call(self.tmp, [(0, [line(1, 2, "Speaker 1", "live")])])
+        self.live = self.folder / "transcript.json"
+        self.better = self.folder / "transcript.speakers.json"
+
+    def relabelled(self, when):
+        self.better.write_text(postprocess.jsonl([line(1, 2, "Ada", "live")]))
+        os.utime(self.better, (when, when))
+
+    def test_the_relabelled_file_wins_only_while_it_is_the_newer(self):
+        self.assertEqual(server.better_of(self.live), self.live)          # nothing has relabelled this call
+        made = self.live.stat().st_mtime
+        self.relabelled(made + 10)
+        self.assertEqual(server.better_of(self.live), self.better)
+        os.utime(self.live, (made + 20, made + 20))                       # hark appended a line after the relabel
+        self.assertEqual(server.better_of(self.live), self.live)
+
+    def test_only_the_live_transcript_is_ever_swapped(self):
+        self.relabelled(self.live.stat().st_mtime + 10)
+        part2 = self.folder / "transcript.part2.json"
+        self.assertEqual(server.better_of(part2), part2)
 
 
 def free_port():

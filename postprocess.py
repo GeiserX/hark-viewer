@@ -33,6 +33,7 @@ ROOT = Path(os.environ.get("HARK_VIEWER_ROOT", Path.home() / "Recordings" / "cal
 HARK_BIN = os.environ.get("HARK_BIN", "hark")
 # MacWhisper's pass is a comparison lane. HARK_VIEWER_MW=off turns it off, a path names another mw.
 MW_BIN = os.environ.get("HARK_VIEWER_MW", "/Applications/MacWhisper.app/Contents/MacOS/mw")
+AUDIO = "audio.opus"                 # part 1 of every call; server.py and relabel_speakers.py read it from here
 STATUS = "postprocess.json"
 FINAL = "transcript.final.json"
 MW_OUT = "transcript.mw.txt"
@@ -72,7 +73,7 @@ def parts_of(folder, meta=None):
     """The parts of a call, oldest first. A call never restarted has one, and no `parts` key."""
     meta = read_meta(folder) if meta is None else meta
     parts = [p for p in meta.get("parts") or [] if isinstance(p, dict) and p.get("audio") and p.get("transcript")]
-    return parts or [{"n": 1, "started": meta.get("started"), "audio": "audio.opus", "transcript": "transcript.json"}]
+    return parts or [{"n": 1, "started": meta.get("started"), "audio": AUDIO, "transcript": "transcript.json"}]
 
 
 def offset_of(part, meta):

@@ -130,7 +130,12 @@ class Job(unittest.TestCase):
 
     def test_a_python_without_the_recognizer_fails_only_the_language_step(self):
         folder = make_call(self.tmp, [(0, [])])
-        run = self.run_job(folder, HARK_VIEWER_PY3=sys.executable,    # this interpreter has no PyObjC bridge
+        # Not this interpreter: whether it carries the bridge decides the test, and
+        # /usr/bin/python3 does carry it, so the step would succeed and the premise would be gone.
+        no_bridge = self.tmp / "python3-without-pyobjc"
+        no_bridge.write_text("#!/bin/sh\necho \"ModuleNotFoundError: No module named 'objc'\" >&2\nexit 1\n")
+        no_bridge.chmod(0o755)
+        run = self.run_job(folder, HARK_VIEWER_PY3=str(no_bridge),
                            FAKE_HARK_TEXT=EN[0])                      # a line long enough to be worth judging
         self.assertEqual(run.returncode, 0, run.stderr)              # the accurate transcript is the point, not this
         status = json.loads((folder / "postprocess.json").read_text())
@@ -336,6 +341,22 @@ class Languages(unittest.TestCase):
         self.assertFalse(got["mixed"])
         self.assertEqual(got["other_lines"], 1)                        # still reported, just not enough to call it
         self.assertIn("stray line", postprocess.say_verdict(got))
+
+    def test_a_long_line_it_cannot_call_still_counts(self):
+        """A line long enough to read counts even when the recogniser will not name it.
+
+        Counting only the named lines shrinks the denominator, and a tenth of a smaller
+        number is easier to reach, so one Spanish line in ten named lines used to be
+        enough to call the call mixed while the same line in eleven read lines is not.
+        """
+        unreadable = "asdf qwer zxcv hjkl poiu lkjh mnbv tyui ghjk"      # scores 0.29, under the floor
+        self.assertLess(postprocess.recognize([unreadable])[0][1], postprocess.LANG_MIN_CONFIDENCE)
+        got = self.verdict((EN * 3)[:9] + [unreadable] + ES[:1])
+        self.assertEqual(got["judged"], 11)                              # 9 English, the unreadable one, 1 Spanish
+        self.assertEqual(got["present"], ["en"])
+        self.assertFalse(got["mixed"])                                   # 1 of 11 is under a tenth
+        self.assertEqual(got["other_lines"], 1)                          # the Spanish line is still reported
+        self.assertAlmostEqual(sum(got["shares"].values()), 10 / 11, places=2)   # the unnamed line is in no share
 
     def test_a_line_too_short_to_judge_is_left_out(self):
         got = self.verdict(["Mm-hmm.", "Cool.", "All right."] + EN)

@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # macOS, and not by preference: st_birthtime, lsof and the PyObjC bridge that carries Apple's
+    # language recognizer are all macOS only. The standard runner is free on a public repository.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      # Both interpreters, because they are both real. The launcher runs whichever python3 is on
+      # PATH, and the language step always runs /usr/bin/python3, which is 3.9: a 3.10 syntax
+      # anywhere would pass the first of these and fail the second.
+      - name: The suite under the python3 on PATH
+        run: |
+          python3 --version
+          python3 -m unittest discover -s tests -v
+
+      - name: The suite under /usr/bin/python3
+        run: |
+          /usr/bin/python3 --version
+          /usr/bin/python3 -m unittest discover -s tests -v

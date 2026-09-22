@@ -312,6 +312,26 @@ def recording_anyway(folder, audio, code, answer):
         time.sleep(0.2)
 
 
+def point_at(link, folder):
+    """Point `link` at `folder` atomically, through a temporary link and a rename.
+
+    Returns None, or why it could not. A rename cannot replace a directory, so an empty one of that
+    name is removed, and one with anything in it is left exactly where it is: it could be a call
+    folder somebody named `current`, and no link is worth deleting a recording over.
+    """
+    if link.is_dir() and not link.is_symlink():
+        try:
+            link.rmdir()
+        except OSError as e:
+            return f"{link} is a directory that is not empty, so it cannot be the current link: {e}"
+    temp = link.with_name(f".{link.name}.new")
+    if temp.is_symlink() or temp.exists():
+        temp.unlink()
+    temp.symlink_to(folder)
+    os.replace(temp, link)
+    return None
+
+
 def new_call(workspace, title):
     if not ensure_agent():
         return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}
@@ -349,10 +369,14 @@ def new_call(workspace, title):
             body = recording
         (folder / "meta.json").write_text(json.dumps(
             {"started": time.time(), "workspace": workspace, "title": str(title).strip(), "id": body.get("id")}))
-        link = ROOT / "current"
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(folder)
+        # A temporary link and a rename, so `current` is never briefly absent: the page and the
+        # launcher both read it, and `finalize current` would have hit nothing in that window. It
+        # also survives a real directory called `current`, which used to make unlink raise.
+        problem = point_at(ROOT / "current", folder)
+        if problem:
+            # The recording is real and running. `current` is a convenience, so losing the call
+            # over it would be the wrong trade; the page reads `?call=` and stop goes through the API.
+            print(f"new: recording {folder.name}, but {problem}", file=sys.stderr, flush=True)
         call = f"{workspace}/{folder.name}"
         watch.call, watch.ended = call, None
         return 200, {"call": call, "folder": str(folder), "url": f"http://127.0.0.1:{PORT}/?call={call}"}

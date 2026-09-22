@@ -887,6 +887,45 @@ class Server(ServerCase):
             self.assertEqual((self.tmp / "work" / name / "audio.opus").read_bytes(), b"older call")
         self.assertEqual(self.api("/api/status")[1]["call"], made["call"])
 
+    def test_current_moves_from_one_call_to_the_next_without_ever_being_absent(self):
+        """`current` was unlinked and then created, so for a moment there was none: the page and the
+        launcher both read it, and `finalize current` in that window would have found nothing. A
+        real directory of that name also made the unlink raise, and 500 the request."""
+        first, one = self.new("one")
+        self.assertEqual(self.api("/api/stop", "POST")[0], 200)
+        missing = []
+        watching = threading.Event()
+
+        def look():
+            watching.set()
+            while not stop.is_set():
+                if not (self.tmp / "current").exists():
+                    missing.append(time.time())
+        stop = threading.Event()
+        eye = threading.Thread(target=look, daemon=True)
+        eye.start()
+        watching.wait(5)
+        second, two = self.new("two")
+        stop.set()
+        eye.join(5)
+        self.assertEqual((self.tmp / "current").resolve(), two.resolve())
+        self.assertEqual(missing, [], "current was absent while it moved")
+
+    def test_an_empty_directory_called_current_is_replaced_rather_than_raised_over(self):
+        (self.tmp / "current").mkdir()
+        made, folder = self.new()
+        self.assertEqual((self.tmp / "current").resolve(), folder.resolve())
+
+    def test_a_directory_called_current_with_something_in_it_costs_the_link_not_the_call(self):
+        """It could be a call folder somebody named `current`, so it is left alone. The recording
+        is real and running, and losing it over a convenience link would be the wrong trade."""
+        (self.tmp / "current").mkdir()
+        (self.tmp / "current" / "someone's notes.txt").write_text("keep me")
+        made, folder = self.new()
+        self.assertTrue(self.api("/api/status")[1]["active"])
+        self.assertEqual((self.tmp / "current" / "someone's notes.txt").read_text(), "keep me")
+        self.assertIn("is a directory that is not empty", (self.tmp / ".server.log").read_text())
+
     def test_restart_records_on_into_the_same_folder_and_does_not_end_the_call(self):
         # hark as it is: `stopped` at once, the capture finishing behind it, /start refused meanwhile.
         # Well inside HARK_VIEWER_STOP_WAIT, or CPU contention alone relaunches the agent.

@@ -720,6 +720,16 @@ class Launcher(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("work/2026-09-21_170000", run.stdout)
 
+    def test_a_setting_in_the_config_file_reaches_the_child_process(self):
+        """Only three variables used to be exported, so anything else in ~/.config/hark-viewer.env
+        was read into the launcher's own shell and never reached the server or the offline job."""
+        folder = make_call(self.tmp, [(0, [line(1.0, 2.0, "Others", "a line long enough to be worth judging")])])
+        cfg = self.tmp / "settings.env"
+        cfg.write_text("HARK_VIEWER_PY3=/nonexistent/python3\n")
+        run = self.run_launcher("languages", str(folder), HARK_VIEWER_CONFIG=str(cfg))
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn("no interpreter at /nonexistent/python3", run.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

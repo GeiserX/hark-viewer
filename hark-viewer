@@ -14,8 +14,10 @@ set -euo pipefail
 
 here="${0:A:h}"
 # Optional local settings, so a checkout stays generic: HARK_BIN, HARK_VIEWER_PORT, …
+# `set -a` exports every one of them, so a setting read only by the page server or by the offline
+# job reaches it. A server already running keeps the settings it started with: `quit` first.
 cfg="${HARK_VIEWER_CONFIG:-$HOME/.config/hark-viewer.env}"
-[[ -f "$cfg" ]] && source "$cfg"
+if [[ -f "$cfg" ]]; then set -a; source "$cfg"; set +a; fi
 export HARK_VIEWER_ROOT="${HARK_VIEWER_ROOT:-$HOME/Recordings/calls}"
 export HARK_VIEWER_PORT="${HARK_VIEWER_PORT:-8474}"
 export HARK_BIN="${HARK_BIN:-hark}"

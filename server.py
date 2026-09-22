@@ -264,7 +264,8 @@ def new_call(workspace, title):
 def restart_call(force=False):
     """Stop the recording and start a new part in the same call folder, for when the capture broke mid-call.
 
-    Also for a session hark reports `failed`, and for an agent that died: then the call is the one in `current`.
+    Also for a session hark reports `failed`, for a capture hark has disowned, and for an agent
+    that died: then the call is the one in `current`.
     """
     if not ensure_agent():
         return 502, {"error": f"could not start the hark agent ({HARK_BIN}); is hark installed?"}

@@ -817,6 +817,36 @@ class CutOffStart(ServerCase):
         self.assertIn("answered the start with 500", (self.tmp / ".server.log").read_text())
 
 
+class SlowRestart(ServerCase):
+    """The part has to reach meta.json before hark is asked to start it. Written afterwards, a
+    crash in between left the part recording into a file no parts_of would ever list."""
+    EXTRA_ENV = {"FAKE_START_DELAY": "3", "HARK_VIEWER_START_TIMEOUT": "30"}
+
+    def test_the_part_is_listed_before_hark_is_asked_to_start_it(self):
+        made, folder = self.new()
+        restart = threading.Thread(target=lambda: self.api("/api/restart", "POST"))
+        restart.start()
+        self.addCleanup(restart.join)
+        self.wait_for(lambda: len(postprocess.parts_of(folder)) == 2, "part 2 in meta.json")
+        self.assertFalse((folder / "audio.part2.opus").exists())       # hark has not answered the start yet
+        restart.join(60)
+        parts = postprocess.parts_of(folder)
+        self.assertEqual([p["audio"] for p in parts], ["audio.opus", "audio.part2.opus"])
+        self.assertTrue((folder / "audio.part2.opus").exists())
+        # The recorded start is when the capture opened, not when it was asked for, or every line
+        # of the part would sit three seconds early on the call's clock.
+        self.assertGreaterEqual(parts[1]["started"], (folder / "audio.part2.opus").stat().st_mtime - 1)
+
+    def test_a_part_that_never_started_is_taken_back_out_of_meta_json(self):
+        made, folder = self.new()
+        self.fake(refuse_start=True)
+        code, body = self.api("/api/restart", "POST")
+        self.assertEqual(code, 502, body)
+        self.assertEqual(len(postprocess.parts_of(folder)), 1)
+        self.assertNotIn("parts", postprocess.read_meta(folder))
+        self.assertFalse((folder / "audio.part2.opus").exists())
+
+
 class EndedAnyWay(ServerCase):
     """Only a session hark called `stopped` used to get the accurate transcript. hark's own
     `failed`, and an agent that vanished with the call still open, left it unwritten, and a server

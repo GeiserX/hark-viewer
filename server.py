@@ -289,11 +289,17 @@ def restart_call(force=False):
         n = len(parts) + 1
         while (folder / f"audio.part{n}.opus").exists() or (folder / f"transcript.part{n}.json").exists():
             n += 1                                          # hark never overwrites, so never offer it a taken name
-        part = {"n": n, "audio": f"audio.part{n}.opus", "transcript": f"transcript.part{n}.json"}
+        part = {"n": n, "audio": f"audio.part{n}.opus", "transcript": f"transcript.part{n}.json", "started": time.time()}
+        # The part is in meta.json before hark is asked for it. Written afterwards, a crash or a
+        # SIGKILL in between left part n recording into a file no parts_of would ever list, so both
+        # the joined live transcript and the accurate one skipped it, with no error anywhere.
+        was = json.dumps(meta)
+        postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
         code, body = start_recording(folder / part["audio"], folder / part["transcript"])
         if code not in (200, 201):
+            postprocess.write_atomic(folder / "meta.json", was)   # it never started: take it back out
             return 502, {"error": f"the call is stopped and part {n} did not start: {body.get('error') or body}", "call": call}
-        part["started"] = time.time()
+        part["started"] = time.time()                             # when the capture opened, not when it was asked for
         postprocess.write_atomic(folder / "meta.json", json.dumps({**meta, "parts": parts + [part]}))
         watch.call, watch.ended = call, None
         return 200, {"call": call, "folder": str(folder), "part": n, "url": f"http://127.0.0.1:{PORT}/?call={call}"}

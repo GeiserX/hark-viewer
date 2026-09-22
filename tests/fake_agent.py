@@ -10,9 +10,11 @@ session reads `failed`, as hark's own watchdog does it. Only a new agent gets ou
 answer and every session: hark gives up waiting for its own capture at 60 s and then says
 `recording` with `capturing: false`, which is a start that recorded nothing.
 
-`stop_answer` makes /stop answer that code and change nothing, which is hark refusing to stop.
+`stop_answer` makes /stop answer that code and change nothing, which is hark refusing to stop,
+and `refuse_start` makes /start answer 500 and start nothing.
 
-POST /_fake {"session": {...}, "finish": s, "wedged": bool, "capturing": bool, "stop_answer": code}
+POST /_fake {"session": {...}, "finish": s, "wedged": bool, "capturing": bool, "stop_answer": code,
+"refuse_start": bool}
 changes it from a test. Every request is a line in FAKE_LOG: `agent <pid> <path> <json body>`.
 """
 import json
@@ -26,7 +28,7 @@ from pathlib import Path
 S = {"session": None, "finish": float(os.environ.get("FAKE_FINISH", "0")), "wedged": False, "writing_until": 0.0,
      "stop_timeout": float(os.environ.get("FAKE_STOP_TIMEOUT", "10")),
      "capturing": os.environ.get("FAKE_CAPTURING", "1") not in ("0", "false", "no"),
-     "stop_answer": int(os.environ.get("FAKE_STOP_ANSWER", "0"))}
+     "stop_answer": int(os.environ.get("FAKE_STOP_ANSWER", "0")), "refuse_start": False}
 
 
 def finishing():
@@ -69,6 +71,8 @@ class H(BaseHTTPRequestHandler):
         live = S["session"] and S["session"]["state"] in ("recording", "paused")
         if self.path == "/start":
             time.sleep(float(os.environ.get("FAKE_START_DELAY", "0")))   # a cold model keeps a real start waiting
+            if S["refuse_start"]:
+                return self.answer(500, {"error": "hark would not start a recording"})
             if live:
                 return self.answer(409, {"error": "a recording is already active"})
             if finishing():

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GeiserX/hark-viewer/main/docs/images/banner.svg" alt="hark-viewer" width="100%">
+  <img src="docs/images/banner.svg" alt="hark-viewer" width="100%">
 </p>
 
 # hark-viewer

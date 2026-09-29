@@ -45,6 +45,6 @@ hark answers `stopped` the moment a stop is asked for. Its capture finishes writ
 Open an [issue](https://github.com/GeiserX/hark-viewer/issues) with:
 
 - the hark version (`brew list --versions hark`, or the commit you built) and the macOS version
-- the JSON `/api/status` returns (`curl -s http://127.0.0.1:8474/api/status`)
+- the JSON `/api/status` returns (`curl -s http://127.0.0.1:8474/api/status`, with your `HARK_VIEWER_PORT` in place of 8474 if you changed it)
 - what the launcher printed to the terminal
 - whether the call was restarted, and `meta.json` of the call if it was

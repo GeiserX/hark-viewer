@@ -1,6 +1,6 @@
 # As an agent skill
 
-The repository root is a skill. [`SKILL.md`](../SKILL.md) sits next to the [`hark-viewer`](../hark-viewer) command it runs. For Claude Code:
+The repository root is a skill. [`SKILL.md`](https://github.com/GeiserX/hark-viewer/blob/main/SKILL.md) sits next to the [`hark-viewer`](https://github.com/GeiserX/hark-viewer/blob/main/hark-viewer) command it runs. For Claude Code:
 
 ```sh
 git clone https://github.com/GeiserX/hark-viewer.git ~/.claude/skills/record-call
@@ -17,12 +17,12 @@ Live speaker numbers are guessed as the audio arrives, so a long call with sever
 ./hark-viewer relabel work/2026-09-21_101500 --dry-run   # counts only, writes nothing
 ```
 
-[`relabel_speakers.py`](../relabel_speakers.py) splits the call side of `audio.opus`, runs it through hark, and writes two files next to the recording:
+[`relabel_speakers.py`](https://github.com/GeiserX/hark-viewer/blob/main/relabel_speakers.py) splits the call side of `audio.opus`, runs it through hark, and writes two files next to the recording:
 
 - `speakers.json`, the spans it found, so a second run needs no model
 - `transcript.speakers.json`, the live lines with the speaker of the span each one overlaps most
 
-It never touches `transcript.json`, and it leaves lines labelled `You` alone. [`server.py`](../server.py) serves `transcript.speakers.json` in place of `transcript.json` when it exists, so the page and any agent reading the call get the better labels for free. A page already on screen keeps the rows it has drawn. Reload for the new colours. Run it once the call is over: a line hark appends after the relabel makes the live file the newer one, and the newer file is the one served. Run straight after Stop it waits for the recording to stop changing first, the same way the accurate pass does, and says how long it waited.
+It never touches `transcript.json`, and it leaves lines labelled `You` alone. [`server.py`](https://github.com/GeiserX/hark-viewer/blob/main/server.py) serves `transcript.speakers.json` in place of `transcript.json` when it exists, so the page and any agent reading the call get the better labels for free. A page already on screen keeps the rows it has drawn. Reload for the new colours. Run it once the call is over: a line hark appends after the relabel makes the live file the newer one, and the newer file is the one served. Run straight after Stop it waits for the recording to stop changing first, the same way the accurate pass does, and says how long it waited.
 
 On the eight-person call this was built against, the live pass used three speaker numbers and the offline pass found all seven. 59 of the 69 non-`You` lines matched a span and the other 10 kept their live label. The run took eleven seconds. `relabel` exits 3 and writes nothing when fewer than 60% of the lines match, which catches spans belonging to a different recording.
 

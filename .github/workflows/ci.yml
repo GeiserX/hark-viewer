@@ -31,7 +31,7 @@ jobs:
         python: [python3, /usr/bin/python3]
     name: ${{ matrix.python }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false   # nothing here pushes, so the job has no use for the token
 

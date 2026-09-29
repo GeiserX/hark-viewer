@@ -1008,7 +1008,12 @@ class Server(ServerCase):
     def test_current_moves_from_one_call_to_the_next_without_ever_being_absent(self):
         """`current` was unlinked and then created, so for a moment there was none: the page and the
         launcher both read it, and `finalize current` in that window would have found nothing. A
-        real directory of that name also made the unlink raise, and 500 the request."""
+        real directory of that name also made the unlink raise, and 500 the request.
+
+        The link is looked at, not followed. On macOS a stat through a symlink that a rename is
+        replacing fails now and then with EINVAL, although the link itself is there throughout:
+        Python 3.14's exists() reads that as absent and failed about one run in three, and 3.9's
+        raised it, which killed this thread and let the test pass without looking."""
         first, one = self.new("one")
         self.assertEqual(self.api("/api/stop", "POST")[0], 200)
         missing = []
@@ -1017,7 +1022,7 @@ class Server(ServerCase):
         def look():
             watching.set()
             while not stop.is_set():
-                if not (self.tmp / "current").exists():
+                if not os.path.lexists(self.tmp / "current"):
                     missing.append(time.time())
         stop = threading.Event()
         eye = threading.Thread(target=look, daemon=True)

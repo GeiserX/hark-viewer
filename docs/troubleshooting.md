@@ -1,4 +1,6 @@
-# When the capture dies mid-call
+# Troubleshooting
+
+## When the capture dies mid-call
 
 hark's tap on the call side can go silent while hark still reports `recording`. On a 71-minute call it happened twice, and nothing on the page said so.
 
@@ -37,3 +39,12 @@ A start is answered only once hark's capture is open, so nothing said after the 
 The waiting only works if the client waits too. The server adds up its own worst case for one start and reports it as `patience` in `/api/status`. That sum walks the whole chain, the agent check, the status read, the wait for a capture that is still finishing, the relaunch and the start after it, rather than estimating, because a number smaller than the chain reaches you as a timeout on a call that was recording. `./hark-viewer` reads that number and hands it to curl as the request's own limit. One number, both sides, so a start the server is still waiting out never reaches you as a timeout.
 
 hark answers `stopped` the moment a stop is asked for. Its capture finishes writing the audio afterwards, `/status` does not show that, and until it is done `/start` answers 409 "still finishing". So a restart, and a new call, keep asking for up to 15 seconds (`HARK_VIEWER_STOP_WAIT`). hark itself gives up on a capture after 10 seconds and then refuses every start until its agent is restarted, so past the 15 the server kills the agent on hark's port, and only a process whose command line says `--remote-control`, starts a new one and asks once more. A fresh agent gets 30 seconds to answer (`HARK_VIEWER_AGENT_WAIT`), and a hark slower than that is waited for rather than started a second time. The old agent has 10 seconds to let go of the port (`HARK_VIEWER_DIE_WAIT`). An agent that outlives the kill still holds it, so nothing fresh can bind it, and the restart then says the agent did not come back rather than handing the wedged one back. A hark that is not installed at all leaves the page server running, because saying so is the page's job.
+
+## Reporting a bug
+
+Open an [issue](https://github.com/GeiserX/hark-viewer/issues) with:
+
+- the hark version (`brew list --versions hark`, or the commit you built) and the macOS version
+- the JSON `/api/status` returns (`curl -s http://127.0.0.1:8474/api/status`)
+- what the launcher printed to the terminal
+- whether the call was restarted, and `meta.json` of the call if it was

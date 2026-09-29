@@ -23,7 +23,7 @@ hark-viewer shows the transcript in the browser while hark writes it, with a col
 - Shows the line still being spoken in grey, when hark can stream it.
 - Starts, stops, pauses and mutes from the page. No terminal window stays open.
 - Warns when the capture dies, and restarts it into the same call folder.
-- Files every call in its own folder, keeps the audio, and writes an accurate transcript once the call stops.
+- Files every call in its own folder, keeps the audio, and writes an accurate transcript once the call stops (its call side needs a hark newer than 0.4.3).
 - Says which languages a call was in, and fixes live speaker labels after the call with `relabel`.
 - Runs on `127.0.0.1` only. Nothing leaves the machine.
 
@@ -35,19 +35,20 @@ cd hark-viewer
 ./hark-viewer work "Weekly sync"   # record a call filed under "work" and open the page
 ```
 
-Needs macOS 14.4 or later on Apple Silicon, [hark](https://github.com/PhantomYdn/hark) 0.4.3 or later with the Parakeet model, and the Python 3 macOS ships. Setup is in [Installation](docs/installation.md).
+Needs macOS 14.4 or later on Apple Silicon, [hark](https://github.com/PhantomYdn/hark) 0.4.3 or later with the Parakeet model, and the Python 3 macOS ships. Setup is in [Getting started](docs/getting-started.md).
 
 ## Documentation
 
-- [Installation](docs/installation.md): requirements and the hark models
+- [Getting started](docs/getting-started.md): requirements, the hark models, first recording
+- [Configuration](docs/configuration.md): every setting and its default
 - [Usage](docs/usage.md): every command, URL options, where calls are filed
-- [When the capture dies mid-call](docs/capture-failures.md): the warnings, Restart, and the timeouts behind them
-- [The accurate transcript](docs/accurate-transcript.md): the offline pass after a call, and language detection
-- [How it fits together](docs/architecture.md): the server, its API and every setting
-- [As an agent skill](docs/agent-skill.md): Claude Code, fixing speakers, getting your own voice back out
+- [How it works](docs/how-it-works.md): the server, its API, what it asks hark to record
+- [Troubleshooting](docs/troubleshooting.md): when the capture dies mid-call, the warnings, Restart, and how to report a bug
 - [Development](docs/development.md): running the tests
+- [The accurate transcript](docs/accurate-transcript.md): the offline pass after a call, and language detection
+- [As an agent skill](docs/agent-skill.md): Claude Code, fixing speakers, getting your own voice back out
 - [Limits](docs/limits.md): what it cannot do yet. Recording a call needs the consent of the people on it.
 
 ## License
 
-[GPL-3.0](LICENSE)
+[GPL-3.0-or-later](LICENSE)

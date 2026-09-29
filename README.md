@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GeiserX/hark-viewer/main/docs/images/banner.svg" alt="hark-viewer" width="100%">
+</p>
+
 # hark-viewer
 
 A live transcript page and recording controls for [hark](https://github.com/PhantomYdn/hark), the macOS CLI that captures system audio and the microphone and transcribes them on-device.

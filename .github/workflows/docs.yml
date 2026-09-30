@@ -36,9 +36,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One run at a time per ref, in push order, never cancelled. Locking only the
-# deploy job is not enough: an older push whose build finishes later would
-# deploy last and publish a stale site. Pull requests get their own group.
+# One run at a time per ref. Locking only the deploy job is not enough: an
+# older push whose build finishes later would deploy last and publish a stale
+# site. The group does not guarantee push order, though, so the deploy job
+# also checks that no newer commit changed the site. Pull requests get their
+# own group.
 concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: false
@@ -84,13 +86,32 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      # GitHub orders a concurrency group by when each run started waiting,
+      # not by push order. If main has since changed a file this site is built
+      # from, that newer commit's own run deploys it, so this run stands down.
+      # Comparing files rather than the main tip keeps a later push that
+      # touches no docs file (and so never runs this workflow) from blocking
+      # the deploy.
+      - name: Check that no newer commit changed the site
+        id: fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          newer=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" \
+            --jq '[.files[].filename | select(startswith("docs/") or . == "mkdocs.yml" or . == ".github/workflows/docs.yml")] | length')
+          echo "site files changed on main since $GITHUB_SHA: $newer"
+          if [ "$newer" -gt 0 ]; then echo "stale=true" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.fresh.outputs.stale != 'true'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - id: deployment
+        if: steps.fresh.outputs.stale != 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

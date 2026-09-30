@@ -35,7 +35,7 @@ instead of the current one, `?workspace=name` puts that folder at the top of the
 before any call has been filed under it, and `?quiet=SECONDS` changes how long the page waits
 before it guesses that a capture has died.
 
-![A saved call, ready to record the next one](images/saved.png)
+![A saved call, ready to record the next one](images/screenshots/saved.png)
 
 ## Where calls go
 

@@ -13,7 +13,7 @@ A live transcript page and recording controls for [hark](https://github.com/Phan
 
 hark-viewer shows the transcript in the browser while hark writes it, with a colour per speaker and a clock time per line, and puts Record, Stop, Pause and Mute on the same page. It also ships an [agent skill](SKILL.md), so a coding agent such as Claude Code can start a recording and answer questions about the call while it is happening.
 
-![A call being recorded](docs/images/recording.png)
+![hark-viewer half an hour into a call: five lines from You, Speaker 1 and Speaker 2 with their clock times, the line still being spoken in grey, and Mute mic, Pause, Restart and Stop in the header](docs/images/screenshots/recording.png)
 
 ## Features
 
@@ -35,19 +35,21 @@ cd hark-viewer
 ./hark-viewer work "Weekly sync"   # record a call filed under "work" and open the page
 ```
 
-Needs macOS 14.4 or later on Apple Silicon, [hark](https://github.com/PhantomYdn/hark) 0.4.3 or later with the Parakeet model, and the Python 3 macOS ships. Setup is in [Getting started](docs/getting-started.md).
+Needs macOS 14.4 or later on Apple Silicon, [hark](https://github.com/PhantomYdn/hark) 0.4.3 or later with the Parakeet model, and the Python 3 macOS ships. Setup is in [Getting started](https://geiserx.github.io/hark-viewer/getting-started/).
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): requirements, the hark models, first recording
-- [Configuration](docs/configuration.md): every setting and its default
-- [Usage](docs/usage.md): every command, URL options, where calls are filed
-- [How it works](docs/how-it-works.md): the server, its API, what it asks hark to record
-- [Troubleshooting](docs/troubleshooting.md): when the capture dies mid-call, the warnings, Restart, and how to report a bug
-- [Development](docs/development.md): running the tests
-- [The accurate transcript](docs/accurate-transcript.md): the offline pass after a call, and language detection
-- [As an agent skill](docs/agent-skill.md): Claude Code, fixing speakers, getting your own voice back out
-- [Limits](docs/limits.md): what it cannot do yet. Recording a call needs the consent of the people on it.
+The full documentation is at [geiserx.github.io/hark-viewer](https://geiserx.github.io/hark-viewer/).
+
+- [Getting started](https://geiserx.github.io/hark-viewer/getting-started/): requirements, the hark models, first recording
+- [Configuration](https://geiserx.github.io/hark-viewer/configuration/): every setting and its default
+- [Usage](https://geiserx.github.io/hark-viewer/usage/): every command, URL options, where calls are filed
+- [How it works](https://geiserx.github.io/hark-viewer/how-it-works/): the server, its API, what it asks hark to record
+- [Troubleshooting](https://geiserx.github.io/hark-viewer/troubleshooting/): when the capture dies mid-call, the warnings, Restart, and how to report a bug
+- [Development](https://geiserx.github.io/hark-viewer/development/): running the tests
+- [The accurate transcript](https://geiserx.github.io/hark-viewer/accurate-transcript/): the offline pass after a call, and language detection
+- [As an agent skill](https://geiserx.github.io/hark-viewer/agent-skill/): Claude Code, fixing speakers, getting your own voice back out
+- [Limits](https://geiserx.github.io/hark-viewer/limits/): what it cannot do yet. Recording a call needs the consent of the people on it.
 
 ## License
 

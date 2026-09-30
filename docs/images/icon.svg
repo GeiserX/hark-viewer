@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="hark-viewer">
+<defs><clipPath id="c"><rect width="200" height="200" rx="40"/></clipPath></defs>
+<g clip-path="url(#c)"><g transform="translate(-600 -76)">
+<rect x="600" y="76" width="200" height="200" fill="#1b2048"/>
+<rect x="646" y="84" width="14" height="18" fill="#ffd67a" fill-opacity="1"/>
+<rect x="676" y="84" width="14" height="18" fill="#ffd67a" fill-opacity="0.5"/>
+<rect x="736" y="84" width="14" height="18" fill="#ffd67a" fill-opacity="0.5"/>
+<rect x="676" y="118" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="706" y="118" width="14" height="18" fill="#ffd67a" fill-opacity="1"/>
+<rect x="616" y="220" width="14" height="18" fill="#ffd67a" fill-opacity="1"/>
+<rect x="646" y="220" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="676" y="220" width="14" height="18" fill="#ffd67a" fill-opacity="0.5"/>
+<rect x="706" y="220" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="736" y="220" width="14" height="18" fill="#ffd67a" fill-opacity="1"/>
+<rect x="616" y="254" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="736" y="254" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="766" y="254" width="14" height="18" fill="#ffd67a" fill-opacity="0.8"/>
+<rect x="560" y="146" width="720" height="54" fill="#050608"/>
+<rect x="560" y="146" width="720" height="4" fill="#3a3f55"/>
+<rect x="560" y="196" width="720" height="4" fill="#3a3f55"/>
+</g></g></svg>

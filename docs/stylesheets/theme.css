@@ -3,7 +3,7 @@
  * banner.svg draws the name in white on #0e1330, the buildings in #1b2048
  * and #232a5a with windows lit #ffd67a, a black #050608 caption strip, and
  * the tagline and the "YOU:" caption in amber #ffb347. The header and the
- * dark page use the banner background, the accent is the amber. mkdocs.yml
+ * dark page use the banner background, the accent is the amber. zensical.toml
  * sets primary and accent to custom, so nothing is painted until these
  * variables exist.
  */
@@ -46,9 +46,15 @@
  * scroll. Styling both would change every page title too.
  */
 .md-header__topic:first-child .md-ellipsis {
-  color: #ffffff;
   font-weight: 800;
   letter-spacing: -0.01em;
+}
+
+/* The white only on the dark scheme: Zensical's modern header takes the page
+   background, so on the light scheme it is white and a white name would vanish.
+   There the name keeps the default text colour. */
+[data-md-color-scheme="slate"] .md-header__topic:first-child .md-ellipsis {
+  color: #ffffff;
 }
 
 /* Keep the mark and the name close, so they read as one unit. */
